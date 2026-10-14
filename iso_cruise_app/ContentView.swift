@@ -40,6 +40,8 @@ struct ContentView: View {
 }
 
 struct MainTabView: View {
+    @Environment(GameCoordinator.self) private var games
+
     var body: some View {
         TabView {
             Tab("Chat", systemImage: "bubble.left.and.bubble.right.fill") {
@@ -49,12 +51,39 @@ struct MainTabView: View {
                 GamesHomeView()
             }
         }
+        // Presented from the root so a match opens no matter which tab is showing.
+        .fullScreenCover(isPresented: Binding(
+            get: { games.lobby != nil },
+            set: { _ in }
+        )) {
+            MatchContainerView()
+        }
+        .alert(
+            gameInvitationTitle,
+            isPresented: Binding(
+                get: { games.invitation != nil },
+                set: { _ in }
+            ),
+            presenting: games.invitation
+        ) { _ in
+            Button("Join") { games.respondToInvitation(accept: true) }
+            Button("Decline", role: .cancel) { games.respondToInvitation(accept: false) }
+        } message: { invitation in
+            Text("\(invitation.payload.seatsTaken) of \(invitation.payload.maxSeats) seats taken.")
+        }
+    }
+
+    private var gameInvitationTitle: String {
+        guard let invitation = games.invitation else { return "" }
+        return "\(invitation.host.labeledName) invited you to play \(invitation.payload.gameType.displayName)"
     }
 }
 
 #Preview {
     let profile = ProfileStore()
+    let session = SessionManager(transport: MultipeerTransport(), profile: profile)
     ContentView()
         .environment(profile)
-        .environment(SessionManager(transport: MultipeerTransport(), profile: profile))
+        .environment(session)
+        .environment(GameCoordinator(session: session))
 }

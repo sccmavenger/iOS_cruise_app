@@ -371,6 +371,26 @@ struct SessionManagerTests {
         #expect(session.chat.messages.last?.text.contains("disconnected") == true)
     }
 
+    @Test("Hello arriving before the connected callback is still accepted")
+    func helloBeforeConnectedEvent() {
+        session.handle(.received(encode(.hello(HelloPayload(nickname: "Early", protocolVersion: 1)), sequence: 1), from: peerKey))
+        #expect(session.connectedIdentities.map(\.id) == [remoteId])
+        // The late connected callback must not re-send hello or drop the identity.
+        let sentBefore = transport.sent.count
+        session.handle(.peerStateChanged(peerKey, .connected))
+        #expect(transport.sent.count == sentBefore)
+        #expect(session.connectedIdentities.map(\.id) == [remoteId])
+    }
+
+    @Test("Late packets after a disconnect don't revive the peer")
+    func latePacketAfterDisconnect() {
+        connectAndHello()
+        session.handle(.peerStateChanged(peerKey, .notConnected))
+        session.handle(.received(encode(.chat(ChatPayload(text: "ghost")), sequence: 9), from: peerKey))
+        #expect(session.connectedPeers.isEmpty)
+        #expect(!session.chat.messages.contains { $0.text == "ghost" })
+    }
+
     @Test("Invitations are surfaced and answered")
     func invitations() throws {
         let invitationId = UUID()

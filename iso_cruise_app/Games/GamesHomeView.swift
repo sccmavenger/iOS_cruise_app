@@ -1,18 +1,132 @@
 import SwiftUI
 
-/// The single Games tab listing all three titles.
+/// The single Games tab listing all three titles, open games nearby, and the active match.
 struct GamesHomeView: View {
+    @Environment(GameCoordinator.self) private var games
+    @Environment(SessionManager.self) private var session
+    @State private var selectedGame: GameType?
+
     var body: some View {
+        @Bindable var games = games
         NavigationStack {
             ScrollView {
-                VStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 16) {
+                    if session.connectedIdentities.isEmpty {
+                        Label("Connect to someone in the Chat tab's People list to play together.", systemImage: "person.2.wave.2")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .padding()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .glassEffect(.regular, in: .rect(cornerRadius: 18))
+                    }
+
                     ForEach(GameType.allCases) { game in
-                        GameTile(game: game, isAvailable: false)
+                        Button {
+                            selectedGame = game
+                        } label: {
+                            GameTile(game: game, isAvailable: game.isPlayable, openCount: games.offers(for: game).count)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!game.isPlayable)
                     }
                 }
                 .padding()
             }
             .navigationTitle("Games")
+            .sheet(item: $selectedGame) { game in
+                GameDetailSheet(game: game)
+            }
+            .alert(
+                games.notice ?? "",
+                isPresented: Binding(
+                    get: { games.notice != nil && games.lobby == nil },
+                    set: { if !$0 { games.notice = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) {}
+            }
+        }
+    }
+}
+
+/// Host a new game or join an open one for a single title.
+struct GameDetailSheet: View {
+    let game: GameType
+    @Environment(GameCoordinator.self) private var games
+    @Environment(SessionManager.self) private var session
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    HStack(spacing: 16) {
+                        GameArtwork(game: game)
+                            .frame(width: 72, height: 72)
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading) {
+                            Text(game.tagline)
+                            Text(game.playerCountText)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section {
+                    Button {
+                        games.hostLobby(game)
+                        dismiss()
+                    } label: {
+                        Label("Host a New Game", systemImage: "plus.circle.fill")
+                    }
+                } footer: {
+                    Text("Nearby connected players will see your game and can join. You can also invite someone directly from the lobby.")
+                }
+
+                Section("Open games nearby") {
+                    let offers = games.offers(for: game)
+                    if offers.isEmpty {
+                        Text(session.connectedIdentities.isEmpty ? "Connect to people first to see their games." : "No open games right now.")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(offers) { offer in
+                        Button {
+                            games.join(offer)
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text("\(offer.host.labeledName)'s game")
+                                        .foregroundStyle(.primary)
+                                    Text("\(offer.payload.seatsTaken) of \(offer.payload.maxSeats) seats taken")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if games.joiningLobbyId == offer.id {
+                                    ProgressView()
+                                } else {
+                                    Text(offer.isFull ? "Full" : "Join")
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(offer.isFull ? Color.secondary : Theme.teal)
+                                }
+                            }
+                        }
+                        .disabled(offer.isFull || games.joiningLobbyId != nil)
+                        .accessibilityHint("Asks the host for a seat")
+                    }
+                }
+            }
+            .navigationTitle(game.displayName)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .onChange(of: games.lobby?.id) { _, id in
+                if id != nil { dismiss() }
+            }
         }
     }
 }
@@ -20,6 +134,7 @@ struct GamesHomeView: View {
 struct GameTile: View {
     let game: GameType
     let isAvailable: Bool
+    var openCount: Int = 0
 
     var body: some View {
         HStack(spacing: 16) {
@@ -36,12 +151,9 @@ struct GameTile: View {
                     .font(.caption.weight(.medium))
                     .foregroundStyle(Theme.teal)
                 if !isAvailable {
-                    Text("Coming soon")
-                        .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(.fill.tertiary, in: Capsule())
-                        .padding(.top, 2)
+                    pill("Coming soon", tint: nil)
+                } else if openCount > 0 {
+                    pill(openCount == 1 ? "1 open game nearby" : "\(openCount) open games nearby", tint: Theme.teal)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -52,8 +164,21 @@ struct GameTile: View {
             }
         }
         .padding()
-        .glassEffect(.regular, in: .rect(cornerRadius: 24))
+        .contentShape(.rect)
+        .glassEffect(.regular.interactive(isAvailable), in: .rect(cornerRadius: 24))
+        .opacity(isAvailable ? 1 : 0.75)
         .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(isAvailable ? .isButton : [])
+    }
+
+    private func pill(_ text: String, tint: Color?) -> some View {
+        Text(text)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(tint == nil ? Color.primary : Color.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(tint.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.fill.tertiary), in: Capsule())
+            .padding(.top, 2)
     }
 }
 
@@ -155,8 +280,4 @@ struct GameArtwork: View {
             .overlay(Text(label).font(.system(size: 16, weight: .black)).foregroundStyle(foreground))
             .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
     }
-}
-
-#Preview {
-    GamesHomeView()
 }

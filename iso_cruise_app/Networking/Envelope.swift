@@ -142,6 +142,8 @@ nonisolated struct LobbyOfferPayload: Codable, Equatable, Sendable {
     var hostNickname: String
     var maxSeats: Int
     var seatsTaken: Int
+    /// When set, this offer is a direct invitation to one player rather than a public advertisement.
+    var invitedPlayerId: String? = nil
 }
 
 nonisolated struct LobbyRefPayload: Codable, Equatable, Sendable {
