@@ -27,6 +27,8 @@ final class SessionManager {
         var isNearby: Bool
         var isInvited: Bool
         var identity: PeerIdentity?
+        /// Set after a connected peer drops, so stray late packets can't revive it.
+        var didDisconnect = false
 
         var id: PeerKey { key }
         var shownName: String { identity?.labeledName ?? displayName }
@@ -228,6 +230,7 @@ final class SessionManager {
         let previous = peer.connection
         peer.connection = state
         if state != .connecting { peer.isInvited = false }
+        if state == .connecting || state == .connected { peer.didDisconnect = false }
 
         if state == .connected, previous != .connected {
             peers[key] = peer
@@ -241,6 +244,7 @@ final class SessionManager {
                 onPeerDisconnected?(identity)
             }
             peer.identity = nil
+            peer.didDisconnect = true
             recentArrivals[key] = nil
         }
 
@@ -264,6 +268,16 @@ final class SessionManager {
     // MARK: - Inbound validation
 
     private func handleIncoming(_ data: Data, from key: PeerKey) {
+        // The transport only delivers data from peers inside the session, but its
+        // "connected" callback can trail the peer's first message (typically `hello`).
+        // Treat arriving data as proof of connection so that first message isn't lost.
+        if let existing = peers[key] {
+            if existing.connection != .connected, !existing.didDisconnect {
+                handleStateChange(key: key, state: .connected)
+            }
+        } else {
+            handleStateChange(key: key, state: .connected)
+        }
         guard var peer = peers[key], peer.connection == .connected else { return reject("unknown peer") }
         guard allowArrival(from: key) else { return reject("rate limited") }
 
