@@ -71,15 +71,15 @@ struct TicTacToeView: View {
         let isWinning = winningLine.contains(index)
         let canTap = isMyTurn && mark == nil
         return Button {
+            guard canTap else { return }
             games.play(.ticTacToe(cell: index))
         } label: {
             ZStack {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(isWinning ? Theme.sunset.opacity(0.9) : Color.white.opacity(canTap ? 0.22 : 0.12))
+                    .fill(isWinning ? Theme.coral : Color.white.opacity(canTap ? 0.22 : 0.12))
                 if let mark {
                     Image(systemName: mark == .x ? "xmark" : "circle")
                         .font(.system(size: 44, weight: .heavy))
-                        .foregroundStyle(mark == .x ? Theme.foam : Theme.sunset)
                         .foregroundStyle(isWinning ? Color.white : (mark == .x ? Theme.foam : Theme.sunset))
                         .transition(.scale.combined(with: .opacity))
                 }
@@ -87,7 +87,7 @@ struct TicTacToeView: View {
             .aspectRatio(1, contentMode: .fit)
         }
         .buttonStyle(.plain)
-        .disabled(!canTap)
+        .allowsHitTesting(canTap)
         .accessibilityLabel(cellLabel(index, mark: mark))
         .accessibilityHint(canTap ? "Places your \(myMark?.symbol ?? "") here" : "")
     }
@@ -118,6 +118,6 @@ struct PlayerBadge: View {
         .padding(.vertical, 8)
         .glassEffect(isActive ? .regular.tint(Theme.teal.opacity(0.35)) : .regular, in: Capsule())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(name) plays \(mark.symbol)\(isActive ? ", current turn" : "")")
+        .accessibilityLabel("\(name) \(name == "You" ? "play" : "plays") \(mark.symbol)\(isActive ? ", current turn" : "")")
     }
 }

@@ -7,6 +7,7 @@ struct ChatView: View {
     @State private var showPeers = false
     @State private var showProfile = false
     @State private var sendFailed = false
+    @FocusState private var composerFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -23,11 +24,14 @@ struct ChatView: View {
                         )
                         .padding(.top, 24)
                     }
+                    .scrollDismissesKeyboard(.immediately)
+                    .onTapGesture { composerFocused = false }
                 } else {
                     MessageList(messages: session.chat.messages)
+                        .onTapGesture { composerFocused = false }
                 }
 
-                ComposerBar(draft: $draft, canSend: !session.connectedIdentities.isEmpty) {
+                ComposerBar(draft: $draft, canSend: !session.connectedIdentities.isEmpty, isFocused: $composerFocused) {
                     if session.sendChat(draft) {
                         draft = ""
                     } else {
@@ -137,7 +141,7 @@ struct MessageList: View {
                 .padding()
             }
             .defaultScrollAnchor(.bottom)
-            .scrollDismissesKeyboard(.interactively)
+            .scrollDismissesKeyboard(.immediately)
             .onChange(of: messages.last?.id) { _, last in
                 guard let last else { return }
                 withAnimation { proxy.scrollTo(last, anchor: .bottom) }
@@ -190,6 +194,7 @@ struct MessageRow: View {
 struct ComposerBar: View {
     @Binding var draft: String
     let canSend: Bool
+    var isFocused: FocusState<Bool>.Binding
     let onSend: () -> Void
 
     private var trimmed: String { draft.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -201,6 +206,7 @@ struct ComposerBar: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .glassEffect(.regular, in: .rect(cornerRadius: 20))
+                .focused(isFocused)
                 .disabled(!canSend)
                 .onChange(of: draft) { _, newValue in
                     if newValue.count > EnvelopeCodec.maxChatCharacters {

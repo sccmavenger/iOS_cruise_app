@@ -309,6 +309,16 @@ struct GameCoordinatorTests {
         #expect(host.games.rematchVotes.isEmpty)
     }
 
+    @Test("A lobby you've played in is not listed as open afterwards")
+    func endedLobbyNotListed() throws {
+        let lobbyId = try startTicTacToe()
+        guest.games.leave()
+        #expect(guest.games.lobby == nil)
+        #expect(!guest.games.openOffers.contains { $0.id == lobbyId })
+        host.games.dismissEndedMatch()
+        #expect(host.games.lobby == nil)
+    }
+
     @Test("Public broadcasts contain only lobby metadata")
     func noUnexpectedBroadcastContent() throws {
         _ = try startTicTacToe()

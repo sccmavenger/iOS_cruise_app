@@ -295,6 +295,7 @@ final class GameCoordinator {
 
         joiningLobbyId = nil
         invitation = nil
+        offers[roster.lobbyId] = nil
         if var current = lobby, current.id == roster.lobbyId {
             current.players = roster.players
             lobby = current
@@ -526,6 +527,8 @@ final class GameCoordinator {
     }
 
     private func resetMatch() {
+        // A lobby we were part of is never joinable again.
+        if let id = lobby?.id { offers[id] = nil }
         lobby = nil
         snapshot = nil
         authoritative = nil

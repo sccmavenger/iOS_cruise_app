@@ -33,8 +33,9 @@ struct MatchContainerView: View {
                     }
                 }
             }
-            .confirmationDialog("Leave this game?", isPresented: $confirmLeave, titleVisibility: .visible) {
+            .alert("Leave this game?", isPresented: $confirmLeave) {
                 Button("Leave Game", role: .destructive) { games.leave() }
+                Button("Stay", role: .cancel) {}
             } message: {
                 Text(games.isHost ? "You're the host. Leaving ends the game for everyone." : "The game will end for the other players.")
             }

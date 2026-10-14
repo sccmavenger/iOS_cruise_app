@@ -48,15 +48,6 @@ struct OnboardingView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Button(action: save) {
-                    Text("Get Started")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                }
-                .buttonStyle(.glassProminent)
-                .disabled(sanitized == nil)
-
                 Text("Next, iOS will ask to find devices on your local network. CruiseLAN needs this to discover nearby people.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -64,6 +55,19 @@ struct OnboardingView: View {
             .padding(24)
         }
         .scrollDismissesKeyboard(.interactively)
+        // Pinned above the keyboard so it's always reachable while typing.
+        .safeAreaInset(edge: .bottom) {
+            Button(action: save) {
+                Text("Get Started")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+            }
+            .buttonStyle(.glassProminent)
+            .disabled(sanitized == nil)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 12)
+        }
     }
 
     private func save() {
