@@ -1,39 +1,56 @@
 import CryptoKit
 import Foundation
 
-/// A tiny Bluetooth "doorbell" that wakes a nearby friend's phone while CruiseLAN is in
-/// the background, so it can show a local notification. iOS ends peer-to-peer Wi-Fi
-/// sessions in the background, but a Bluetooth peripheral app is woken for writes.
+/// A small Bluetooth message that reaches a nearby friend's phone while CruiseLAN is in
+/// the background (or the phone is locked). iOS ends peer-to-peer Wi-Fi sessions in the
+/// background, but wakes a Bluetooth peripheral app for incoming writes, so the app can
+/// post a notification or, for the game host, apply a move.
 ///
-/// Privacy and safety:
-/// - A nudge carries only who it's from and what kind it is, never message text.
-/// - Each phone advertises a service UUID derived from its per-launch CruiseLAN id,
-///   which is only ever shared with people it has connected with. It changes every launch.
-/// - The receiver ignores nudges from anyone it hasn't connected with since launch, anyone
-///   blocked, and repeats within `receiveInterval`, and it shows the name it already knows
-///   rather than anything in the payload.
+/// Security:
+/// - Every nudge is sealed with ChaChaPoly using a key that only the two phones share.
+///   The recipient generated it for this one sender and sent it inside its `hello` over
+///   the encrypted peer-to-peer link. Nobody else can read a nudge or forge one, and a
+///   tampered nudge fails to open.
+/// - Each message has an id and a timestamp. Old or repeated messages are dropped.
+/// - A phone advertises a service UUID derived from its per-launch CruiseLAN id, shared
+///   only with people it has connected with. It changes every launch.
 nonisolated enum Nudge {
-    enum Kind: Codable, Equatable, Hashable, Sendable {
-        case chat
+    enum Kind: Codable, Equatable, Sendable {
+        /// A chat message. `preview` is the start of the text, already filtered by the sender.
+        case chat(preview: String?)
         case turn(GameType)
+        /// A move for the host to apply while it's in the background.
+        case move(lobbyId: UUID, request: MoveRequestPayload)
+
+        /// Repeats of the same topic are rate-limited; every move is distinct.
+        var topic: String? {
+            switch self {
+            case .chat: "chat"
+            case .turn(let game): "turn-\(game.rawValue)"
+            case .move: nil
+            }
+        }
     }
 
-    struct Payload: Codable, Equatable, Sendable {
-        /// Format version.
-        var v: Int
-        /// Sender's CruiseLAN id.
-        var from: String
+    /// What's sealed inside a nudge.
+    struct Message: Codable, Equatable, Sendable {
+        var id: UUID
+        var sentAt: Date
         var kind: Kind
     }
 
-    static let version = 1
-    /// Fits in a single default-MTU Bluetooth write.
-    static let maxPayloadBytes = 180
+    static let version = 2
+    /// Largest single write iOS sends with response between iPhones.
+    static let maxPayloadBytes = 512
+    static let maxPreviewBytes = 120
+    /// Nudges older than this (or from the future by more than this) are dropped.
+    static let maxAge: TimeInterval = 5 * 60
     /// Fixed characteristic that receives nudges inside each phone's service.
     static let characteristicUUIDString = "6E1D5A2C-3F4B-4C8E-9A7D-2B1F0C9E8D71"
-    /// Minimum time between two nudges of the same kind to the same person.
-    static let sendInterval: TimeInterval = 45
-    /// Minimum time between two notifications of the same kind from the same person.
+    /// After a nudge on a topic is delivered, don't repeat it for this long.
+    static let deliveredInterval: TimeInterval = 10 * 60
+    static let chatDeliveredInterval: TimeInterval = 45
+    /// Minimum time between two notifications on the same topic from the same person.
     static let receiveInterval: TimeInterval = 30
 
     /// The Bluetooth service UUID a phone advertises, derived from its CruiseLAN id.
@@ -47,24 +64,53 @@ nonisolated enum Nudge {
         return uuid.uuidString
     }
 
-    static func encode(_ payload: Payload) -> Data? {
+    /// Shortens chat text to a notification preview without splitting a character.
+    static func preview(of text: String) -> String {
+        var result = ""
+        for character in text {
+            guard result.utf8.count + character.utf8.count <= maxPreviewBytes else { return result + "…" }
+            result.append(character)
+        }
+        return result
+    }
+
+    /// Wire format: [version: 1 byte][sender id length: 1 byte][sender id, UTF-8][ChaChaPoly
+    /// combined box: nonce + ciphertext + tag]. The sender id only selects the key; it isn't
+    /// trusted until the box opens with that sender's key.
+    static func seal(_ message: Message, from senderId: String, key: SymmetricKey) -> Data? {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(payload), data.count <= maxPayloadBytes else { return nil }
-        return data
-    }
-
-    /// Decodes untrusted bytes from the air; anything unexpected is dropped.
-    static func decode(_ data: Data) -> Payload? {
-        guard data.count <= maxPayloadBytes,
-              let payload = try? JSONDecoder().decode(Payload.self, from: data),
-              payload.v == version,
-              !payload.from.isEmpty, payload.from.count <= EnvelopeCodec.maxSenderIdLength
+        encoder.dateEncodingStrategy = .secondsSince1970
+        let sender = Data(senderId.utf8)
+        guard sender.count <= EnvelopeCodec.maxSenderIdLength,
+              let plain = try? encoder.encode(message),
+              let box = try? ChaChaPoly.seal(plain, using: key).combined
         else { return nil }
-        return payload
+        let data = Data([UInt8(version), UInt8(sender.count)]) + sender + box
+        return data.count <= maxPayloadBytes ? data : nil
     }
 
-    /// Remembers when each (person, kind) was last nudged so repeats are dropped.
+    /// Opens untrusted bytes from the air. Returns `nil` for anything malformed,
+    /// unauthenticated, from an unknown sender, or too old.
+    static func open(_ data: Data, now: Date = .now, key: (String) -> SymmetricKey?) -> (from: String, message: Message)? {
+        let bytes = [UInt8](data)
+        guard bytes.count <= maxPayloadBytes, bytes.count > 2, Int(bytes[0]) == version else { return nil }
+        let senderLength = Int(bytes[1])
+        guard senderLength > 0, senderLength <= EnvelopeCodec.maxSenderIdLength, bytes.count > 2 + senderLength,
+              let from = String(bytes: bytes[2..<(2 + senderLength)], encoding: .utf8),
+              let senderKey = key(from),
+              let box = try? ChaChaPoly.SealedBox(combined: Data(bytes[(2 + senderLength)...])),
+              let plain = try? ChaChaPoly.open(box, using: senderKey)
+        else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        guard let message = try? decoder.decode(Message.self, from: plain),
+              abs(now.timeIntervalSince(message.sentAt)) <= maxAge
+        else { return nil }
+        if case .move(_, let request) = message.kind, !request.move.isStructurallyValid { return nil }
+        return (from, message)
+    }
+
+    /// Remembers when each (person, topic) last happened so repeats are dropped.
     struct RateLimiter {
         let interval: TimeInterval
         private var last: [String: Date] = [:]
@@ -73,11 +119,37 @@ nonisolated enum Nudge {
             self.interval = interval
         }
 
-        /// Returns `true` and records the time if the event is allowed now.
-        mutating func allow(_ personId: String, _ kind: Kind, at now: Date) -> Bool {
-            let key = "\(personId)|\(kind)"
-            if let previous = last[key], now.timeIntervalSince(previous) < interval { return false }
-            last[key] = now
+        func isAllowed(_ personId: String, _ topic: String, at now: Date, interval override: TimeInterval? = nil) -> Bool {
+            guard let previous = last["\(personId)|\(topic)"] else { return true }
+            return now.timeIntervalSince(previous) >= (override ?? interval)
+        }
+
+        mutating func record(_ personId: String, _ topic: String, at now: Date) {
+            last["\(personId)|\(topic)"] = now
+        }
+
+        /// Clears everything recorded for a person (they came back, so new nudges are fresh).
+        mutating func forget(_ personId: String) {
+            last = last.filter { !$0.key.hasPrefix("\(personId)|") }
+        }
+
+        /// Checks and records in one step.
+        mutating func allow(_ personId: String, _ topic: String, at now: Date) -> Bool {
+            guard isAllowed(personId, topic, at: now) else { return false }
+            record(personId, topic, at: now)
+            return true
+        }
+    }
+
+    /// Drops nudges this phone has already handled.
+    struct ReplayGuard {
+        private var seen: [UUID] = []
+        private var seenSet: Set<UUID> = []
+
+        mutating func isNew(_ id: UUID) -> Bool {
+            guard seenSet.insert(id).inserted else { return false }
+            seen.append(id)
+            if seen.count > 500 { seenSet.remove(seen.removeFirst()) }
             return true
         }
     }

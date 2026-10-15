@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import iso_cruise_app
@@ -290,6 +291,89 @@ struct GameCoordinatorTests {
             Issue.record("Expected ended phase for the host")
             return
         }
+    }
+
+    @Test("Each pair of phones shares a private Bluetooth key from the hello handshake")
+    func nudgeKeyExchange() throws {
+        let raw = { (key: SymmetricKey?) in key.map { $0.withUnsafeBytes { Data($0) } } }
+        let hostToGuest = try #require(raw(host.session.nudgeKey(sealingTo: guest.id)))
+        #expect(hostToGuest == raw(guest.session.nudgeKey(openingFrom: host.id)))
+        let guestToHost = try #require(raw(guest.session.nudgeKey(sealingTo: host.id)))
+        #expect(guestToHost == raw(host.session.nudgeKey(openingFrom: guest.id)))
+        #expect(hostToGuest != guestToHost)
+
+        // A third phone gets different keys.
+        let third = network.addNode("Tess")
+        network.connect(third, host)
+        #expect(raw(third.session.nudgeKey(sealingTo: host.id)) != guestToHost)
+    }
+
+    @Test("A peer that says it's stepping away shows as away, not disconnected, and can still get messages")
+    func steppingAway() throws {
+        host.session.send(.presence(PresencePayload(away: true)))
+        network.disconnect(host, guest)
+        #expect(guest.session.chat.messages.last?.text.contains("stepped away") == true)
+        #expect(guest.session.awayIdentityIds == [host.id])
+        #expect(guest.session.canChat)
+        #expect(guest.session.sendChat("brb?") == .sent)
+
+        network.connect(host, guest)
+        #expect(guest.session.steppedAwayIds.isEmpty)
+        #expect(host.session.chat.messages.contains { $0.text == "brb?" })
+    }
+
+    @Test("While the host is away, a guest's move is relayed, applied by the host, and synced on return")
+    func relayedMove() throws {
+        var hostTurns: [GameType] = []
+        host.games.onTurnStarted = { hostTurns.append($0) }
+        var relayed: (hostId: String, lobbyId: UUID, request: MoveRequestPayload, done: (Bool) -> Void)?
+        guest.games.onRelayMove = { relayed = ($0, $1, $2, $3) }
+
+        _ = try startTicTacToe()
+        host.games.play(.ticTacToe(cell: 0)) // Now it's the guest's turn.
+        hostTurns = []
+        network.disconnect(host, guest)      // The host locks their phone.
+
+        guest.games.play(.ticTacToe(cell: 4))
+        let relay = try #require(relayed)
+        #expect(relay.hostId == host.id)
+        #expect(guest.games.pendingMoveId == relay.request.moveId)
+
+        // The Bluetooth write wakes the host's app, which applies the move and says it's their turn.
+        host.games.receiveRelayedMove(relay.request, lobbyId: relay.lobbyId, from: guest.id)
+        relay.done(true)
+        #expect(host.games.revision == 2)
+        #expect(hostTurns == [.ticTacToe])
+        #expect(guest.games.relayedMoveDelivered)
+
+        // A replay of the same move does nothing.
+        host.games.receiveRelayedMove(relay.request, lobbyId: relay.lobbyId, from: guest.id)
+        #expect(host.games.revision == 2)
+
+        network.connect(host, guest)
+        #expect(guest.games.revision == 2)
+        #expect(guest.games.pendingMoveId == nil)
+        #expect(tttState(guest) == tttState(host))
+    }
+
+    @Test("A relayed move that can't be delivered is released so the player can try again")
+    func relayFailure() throws {
+        guest.games.onRelayMove = { _, _, _, done in done(false) }
+        _ = try startTicTacToe()
+        host.games.play(.ticTacToe(cell: 0))
+        network.disconnect(host, guest)
+        guest.games.play(.ticTacToe(cell: 4))
+        #expect(guest.games.pendingMoveId == nil)
+        #expect(guest.games.notice?.contains("Couldn't reach") == true)
+    }
+
+    @Test("Relayed moves from a non-player or for another game are ignored")
+    func relayedMoveValidation() throws {
+        let lobbyId = try startTicTacToe()
+        let bogus = MoveRequestPayload(moveId: UUID(), baseRevision: 0, move: .ticTacToe(cell: 0))
+        host.games.receiveRelayedMove(bogus, lobbyId: UUID(), from: guest.id)
+        host.games.receiveRelayedMove(bogus, lobbyId: lobbyId, from: "stranger")
+        #expect(host.games.revision == 0)
     }
 
     @Test("Turn hooks: the player whose turn starts is told, and an away player is nudged")

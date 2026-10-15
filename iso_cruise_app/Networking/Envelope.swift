@@ -50,6 +50,8 @@ nonisolated struct Envelope: Equatable, Sendable {
         case leave
         case error
         case heartbeat
+        /// "I'm stepping away" (app going to the background) so peers show "away", not "disconnected".
+        case presence
     }
 
     enum Payload: Equatable, Sendable {
@@ -68,6 +70,7 @@ nonisolated struct Envelope: Equatable, Sendable {
         case leave(LeavePayload)
         case error(ErrorPayload)
         case heartbeat(EmptyPayload)
+        case presence(PresencePayload)
 
         var kind: Kind {
             switch self {
@@ -86,6 +89,7 @@ nonisolated struct Envelope: Equatable, Sendable {
             case .leave: .leave
             case .error: .error
             case .heartbeat: .heartbeat
+            case .presence: .presence
             }
         }
     }
@@ -100,6 +104,16 @@ nonisolated struct HelloPayload: Codable, Equatable, Sendable {
     var nickname: String
     /// Protocol version the peer speaks, so incompatible builds can be told apart.
     var protocolVersion: Int
+    /// A fresh random key (base64, 32 bytes) made for this one recipient. The recipient
+    /// uses it to encrypt Bluetooth nudges to the sender while either app is in the
+    /// background, so only the two of them can make or read those nudges. It travels
+    /// only over the encrypted peer-to-peer link. Optional for older builds.
+    var nudgeKey: String? = nil
+}
+
+nonisolated struct PresencePayload: Codable, Equatable, Sendable {
+    /// The sender's app is going to the background; it will come back and reconnect.
+    var away: Bool
 }
 
 nonisolated struct ChatPayload: Codable, Equatable, Sendable {

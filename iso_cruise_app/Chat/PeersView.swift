@@ -55,6 +55,31 @@ struct PeersView: View {
                     }
                 }
 
+                let away = session.awayIdentityIds.compactMap { session.knownIdentities[$0] }
+                if !away.isEmpty {
+                    Section {
+                        ForEach(away, id: \.id) { identity in
+                            HStack(spacing: 12) {
+                                Image(systemName: "moon.zzz.fill")
+                                    .font(.title3)
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 32)
+                                    .accessibilityHidden(true)
+                                Text(identity.labeledName)
+                                Spacer()
+                                Text("Away")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .accessibilityElement(children: .combine)
+                        }
+                    } header: {
+                        Text("Away")
+                    } footer: {
+                        Text("They switched apps, locked their phone, or moved out of range. They reconnect automatically when they're back. Messages you send are held for them, and nearby phones get a notification over Bluetooth.")
+                    }
+                }
+
                 Section {
                     if session.nearbyPeers.isEmpty {
                         Text("Looking for people…")

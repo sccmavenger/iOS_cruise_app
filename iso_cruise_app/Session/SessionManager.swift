@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Observation
 import os
@@ -70,8 +71,12 @@ final class SessionManager {
     /// Messages held for one away person; older ones are dropped.
     static let outboxLimit = 30
     static let outboxLifetime: TimeInterval = 15 * 60
+    /// Someone who dropped longer ago than this is no longer shown or treated as "away".
+    static let awayLifetime: TimeInterval = 30 * 60
     /// If the peer that should invite (see `reconnect`) hasn't after this long, invite anyway.
-    static let reconnectFallback: Duration = .seconds(6)
+    static let reconnectFallback: Duration = .seconds(3)
+    /// Time for the "stepping away" message to leave before the transport is torn down.
+    static let stepAwayGrace: Duration = .milliseconds(300)
     private static let logger = Logger(subsystem: "com.dannyguillory.cruiselan", category: "session")
 
     /// Random per-launch identifier announced to peers. Not tied to the device or the user.
@@ -90,6 +95,8 @@ final class SessionManager {
     /// Everyone who completed the handshake since launch, even if they've since dropped.
     /// Used to recognize people who are away (app in the background) and may be nudged.
     private(set) var knownIdentities: [String: PeerIdentity] = [:]
+    /// Known people whose app said it was going to the background (shown as "away").
+    private(set) var steppedAwayIds: Set<String> = []
 
     /// Game-layer hooks, installed by `GameCoordinator`.
     @ObservationIgnored var onGameEnvelope: ((Envelope, PeerIdentity) -> Void)?
@@ -97,8 +104,10 @@ final class SessionManager {
     @ObservationIgnored var onPeerIdentified: ((PeerIdentity) -> Void)?
     /// A chat message from someone else passed the safety filter and was added to the chat.
     @ObservationIgnored var onChatReceived: ((PeerIdentity, String) -> Void)?
-    /// The local user sent a chat message while these known people were away.
-    @ObservationIgnored var onChatQueuedForAway: (([String]) -> Void)?
+    /// The local user sent a chat message (already filtered) while these known people were away.
+    @ObservationIgnored var onChatQueuedForAway: (([String], String) -> Void)?
+    /// Someone known since launch reconnected (for example, after their app was in the background).
+    @ObservationIgnored var onPeerReturned: ((PeerIdentity) -> Void)?
 
     @ObservationIgnored private let transport: any PeerTransport
     @ObservationIgnored private var eventTask: Task<Void, Never>?
@@ -111,6 +120,16 @@ final class SessionManager {
     @ObservationIgnored private var filterStrikes: [String: Int] = [:]
     /// Chat this user sent while someone they'd connected with was away, by identity id.
     @ObservationIgnored private var outbox: [String: [(text: String, date: Date)]] = [:]
+    /// Bluetooth nudge keys (see `HelloPayload.nudgeKey`). `issued` is what this device
+    /// handed to a transport peer in its hello; once that peer's identity is known it
+    /// becomes `inboundNudgeKeys` (they encrypt to us). `outboundNudgeKeys` are the keys
+    /// peers handed us (we encrypt to them). Kept after a disconnect: that's when they're needed.
+    @ObservationIgnored private var issuedNudgeKeys: [PeerKey: SymmetricKey] = [:]
+    @ObservationIgnored private var inboundNudgeKeys: [String: SymmetricKey] = [:]
+    @ObservationIgnored private var outboundNudgeKeys: [String: SymmetricKey] = [:]
+    @ObservationIgnored private var stepAwayPending = false
+    /// When each known person last dropped.
+    private(set) var droppedAt: [String: Date] = [:]
     @ObservationIgnored private let now: () -> Date
 
     init(
@@ -160,7 +179,25 @@ final class SessionManager {
 
     /// People this user has connected with since launch who aren't connected right now.
     var awayIdentityIds: [String] {
-        knownIdentities.keys.filter { !isConnected($0) }.sorted()
+        let cutoff = now().addingTimeInterval(-Self.awayLifetime)
+        return knownIdentities.keys.filter { id in
+            !isConnected(id) && (droppedAt[id].map { $0 > cutoff } ?? true)
+        }.sorted()
+    }
+
+    /// Chat is possible while anyone is connected, or held for someone who is away.
+    var canChat: Bool {
+        !connectedIdentities.isEmpty || !awayIdentityIds.isEmpty
+    }
+
+    /// Key for encrypting a Bluetooth nudge to `identityId`.
+    func nudgeKey(sealingTo identityId: String) -> SymmetricKey? {
+        outboundNudgeKeys[identityId]
+    }
+
+    /// Key for opening a Bluetooth nudge from `identityId`.
+    func nudgeKey(openingFrom identityId: String) -> SymmetricKey? {
+        inboundNudgeKeys[identityId]
     }
 
     var localIdentity: PeerIdentity {
@@ -193,8 +230,22 @@ final class SessionManager {
         stop()
     }
 
+    /// Going to the background: tells connected peers we're stepping away (so they show
+    /// "away", keep the game paused, and nudge us), gives that a moment to send, then suspends.
+    func stepAway() async {
+        guard status != .idle else { return }
+        send(.presence(PresencePayload(away: true)))
+        stepAwayPending = true
+        try? await Task.sleep(for: Self.stepAwayGrace)
+        // The user may already be back.
+        guard stepAwayPending else { return }
+        stepAwayPending = false
+        suspend()
+    }
+
     /// Restarts discovery after the app returns to the foreground; trusted peers reconnect on their own.
     func resume() {
+        stepAwayPending = false
         guard status == .idle else { return }
         start()
     }
@@ -241,7 +292,7 @@ final class SessionManager {
             held.append((text, now()))
             outbox[id] = Array(held.suffix(Self.outboxLimit))
         }
-        if !away.isEmpty { onChatQueuedForAway?(away) }
+        if !away.isEmpty { onChatQueuedForAway?(away, text) }
         chat.appendText(id: envelope?.id ?? UUID(), senderId: localId, senderName: localIdentity.nickname, text: text, isLocal: true)
         return .sent
     }
@@ -272,6 +323,9 @@ final class SessionManager {
         if let identity = peer.identity {
             knownIdentities[identity.id] = nil
             outbox[identity.id] = nil
+            inboundNudgeKeys[identity.id] = nil
+            outboundNudgeKeys[identity.id] = nil
+            steppedAwayIds.remove(identity.id)
             chat.removeMessages(from: identity.id)
             onPeerDisconnected?(identity, .blocked)
         }
@@ -416,7 +470,12 @@ final class SessionManager {
 
         if state == .notConnected, previous == .connected {
             if let identity = peer.identity {
-                if announce { chat.appendSystem("\(identity.labeledName) disconnected") }
+                if announce {
+                    chat.appendSystem(steppedAwayIds.contains(identity.id)
+                                      ? "\(identity.labeledName) stepped away"
+                                      : "\(identity.labeledName) disconnected")
+                }
+                droppedAt[identity.id] = now()
                 onPeerDisconnected?(identity, .connectionLost)
             }
             peer.identity = nil
@@ -432,10 +491,13 @@ final class SessionManager {
     }
 
     private func sendHello(to key: PeerKey) {
+        let nudgeKey = SymmetricKey(size: .bits256)
+        issuedNudgeKeys[key] = nudgeKey
+        let encodedKey = nudgeKey.withUnsafeBytes { Data($0).base64EncodedString() }
         let hello = Envelope(
             senderId: localId,
             sequence: makeSequence(),
-            payload: .hello(HelloPayload(nickname: localIdentity.nickname, protocolVersion: Envelope.currentVersion))
+            payload: .hello(HelloPayload(nickname: localIdentity.nickname, protocolVersion: Envelope.currentVersion, nudgeKey: encodedKey))
         )
         guard let data = try? EnvelopeCodec.encode(hello) else { return }
         try? transport.send(data, to: [key])
@@ -484,9 +546,18 @@ final class SessionManager {
             peers[key] = peer
             let returning = knownIdentities[identity.id] != nil
             knownIdentities[identity.id] = identity
+            steppedAwayIds.remove(identity.id)
+            droppedAt[identity.id] = nil
+            if let issued = issuedNudgeKeys.removeValue(forKey: key) {
+                inboundNudgeKeys[identity.id] = issued
+            }
+            if let encoded = hello.nudgeKey, let raw = Data(base64Encoded: encoded), raw.count == 32 {
+                outboundNudgeKeys[identity.id] = SymmetricKey(data: raw)
+            }
             trusted.trust(transport.fingerprint(for: key))
             chat.appendSystem(returning ? "\(identity.labeledName) is back" : "\(identity.labeledName) connected")
             deliverOutbox(to: identity)
+            if returning { onPeerReturned?(identity) }
             onPeerIdentified?(identity)
             return
         }
@@ -513,6 +584,8 @@ final class SessionManager {
             onChatReceived?(identity, chatPayload.text)
         case .heartbeat:
             break
+        case .presence(let presence):
+            if presence.away { steppedAwayIds.insert(identity.id) }
         case .hello:
             break
         default:

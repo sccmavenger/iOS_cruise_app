@@ -27,6 +27,7 @@ struct EnvelopeCodecTests {
             .leave(LeavePayload(lobbyId: nil)),
             .error(ErrorPayload(code: "x", message: "y")),
             .heartbeat(EmptyPayload()),
+            .presence(PresencePayload(away: true)),
         ]
         #expect(Set(payloads.map(\.kind)) == Set(Envelope.Kind.allCases))
 
@@ -491,7 +492,7 @@ struct SessionManagerTests {
     @Test("Messages sent while someone is away are held and delivered when they're back")
     func outboxForAway() throws {
         var queuedFor: [String] = []
-        session.onChatQueuedForAway = { queuedFor = $0 }
+        session.onChatQueuedForAway = { ids, _ in queuedFor = ids }
         connectAndHello()
         session.handle(.peerStateChanged(peerKey, .notConnected))
         let before = transport.sent.count

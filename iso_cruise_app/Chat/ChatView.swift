@@ -20,10 +20,10 @@ struct ChatView: View {
                 if session.chat.messages.isEmpty {
                     ScrollView {
                         IllustratedMessage(
-                            title: session.connectedPeers.isEmpty ? "No one connected yet" : "Say hello!",
-                            message: session.connectedPeers.isEmpty
-                                ? "Tap People to find nearby CruiseLAN users and invite them to chat."
-                                : "Messages go to everyone you're connected with and aren't saved."
+                            title: session.canChat ? "Say hello!" : "No one connected yet",
+                            message: session.canChat
+                                ? "Messages go to everyone you're connected with and aren't saved."
+                                : "Tap People to find nearby CruiseLAN users and invite them to chat."
                         )
                         .padding(.top, 24)
                     }
@@ -54,7 +54,8 @@ struct ChatView: View {
                         .accessibilityAddTraits(.isStaticText)
                 }
 
-                ComposerBar(draft: $draft, canSend: !session.connectedIdentities.isEmpty, isFocused: $composerFocused) {
+                // People who stepped away still get messages: held until they're back, with a nudge now.
+                ComposerBar(draft: $draft, canSend: session.canChat, onlyAway: session.connectedIdentities.isEmpty, isFocused: $composerFocused) {
                     switch session.sendChat(draft) {
                     case .sent:
                         draft = ""
@@ -140,6 +141,8 @@ struct ConnectionBanner: View {
         return false
     }
 
+    private var awayCount: Int { session.awayIdentityIds.count }
+
     private var symbol: String {
         switch session.status {
         case .failed: "exclamationmark.triangle.fill"
@@ -162,7 +165,9 @@ struct ConnectionBanner: View {
         case .idle: return "Not searching"
         case .running:
             let connected = session.connectedPeers.count
-            if connected > 0 { return connected == 1 ? "Connected to 1 person" : "Connected to \(connected) people" }
+            let away = awayCount > 0 ? " · \(awayCount) away" : ""
+            if connected > 0 { return (connected == 1 ? "Connected to 1 person" : "Connected to \(connected) people") + away }
+            if awayCount > 0 { return awayCount == 1 ? "Reconnecting… 1 person away" : "Reconnecting… \(awayCount) people away" }
             let nearby = session.nearbyPeers.count
             if nearby > 0 { return nearby == 1 ? "1 person nearby — tap to connect" : "\(nearby) people nearby — tap to connect" }
             return "Searching for people nearby…"
@@ -250,6 +255,8 @@ struct MessageRow: View {
 struct ComposerBar: View {
     @Binding var draft: String
     let canSend: Bool
+    /// Everyone is away: the message is held for them and they get a nudge.
+    var onlyAway = false
     var isFocused: FocusState<Bool>.Binding
     let onSend: () -> Void
 
@@ -257,7 +264,7 @@ struct ComposerBar: View {
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 10) {
-            TextField(canSend ? "Message" : "Connect to someone to chat", text: $draft, axis: .vertical)
+            TextField(canSend ? (onlyAway ? "Message (sent when they're back)" : "Message") : "Connect to someone to chat", text: $draft, axis: .vertical)
                 .lineLimit(1...5)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)

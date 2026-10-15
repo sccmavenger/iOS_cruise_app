@@ -2,34 +2,35 @@ import CoreBluetooth
 import Foundation
 import os
 
-/// CoreBluetooth side of `Nudge`.
+/// CoreBluetooth side of `Nudge`: moves already-sealed bytes between phones.
 ///
 /// - Peripheral role (always on, including in the background via the `bluetooth-peripheral`
-///   background mode): advertises this phone's doorbell service and hands each valid write
-///   to `onNudge`. iOS wakes a suspended app to handle the write.
+///   background mode): advertises this phone's doorbell service and hands each write
+///   to `onReceive`. iOS wakes a suspended app to handle the write.
 /// - Central role (foreground only): to ring someone, scans for their service UUID,
 ///   connects, writes one small payload, and disconnects. One nudge at a time.
 ///
 /// Bluetooth isn't available in Simulator; every path degrades to doing nothing.
 final class NudgeService: NSObject {
     private static let logger = Logger(subsystem: "com.dannyguillory.cruiselan", category: "nudge")
-    /// Give up on a nudge that hasn't been delivered after this long (the person is out of range).
-    private static let deliveryTimeout: Duration = .seconds(20)
-    private static let staleAfter: TimeInterval = 60
+    /// Give up on a delivery that hasn't completed after this long (the person is out of range).
+    /// Phones advertising in the background are discovered more slowly, so this is generous.
+    private static let deliveryTimeout: Duration = .seconds(25)
+    private static let staleAfter: TimeInterval = 90
 
-    /// Called for every well-formed nudge. The app decides whether it deserves a notification.
-    var onNudge: ((Nudge.Payload) -> Void)?
+    /// Called with the raw bytes of every write; `NudgeRouter` opens and validates them.
+    var onReceive: ((Data) -> Void)?
 
     private let characteristicUUID = CBUUID(string: Nudge.characteristicUUIDString)
     private var localId: String?
     private var peripheralManager: CBPeripheralManager?
     private var centralManager: CBCentralManager?
-    private var sendLimiter = Nudge.RateLimiter(interval: Nudge.sendInterval)
 
     private struct Outgoing {
         let serviceUUID: CBUUID
         let data: Data
         let created: Date
+        let completion: (Bool) -> Void
     }
 
     private var queue: [Outgoing] = []
@@ -49,13 +50,10 @@ final class NudgeService: NSObject {
         }
     }
 
-    /// Rings `targetId`'s phone if they're in Bluetooth range. Repeats are rate-limited.
-    func nudge(_ targetId: String, kind: Nudge.Kind) {
-        guard let localId,
-              sendLimiter.allow(targetId, kind, at: .now),
-              let data = Nudge.encode(Nudge.Payload(v: Nudge.version, from: localId, kind: kind))
-        else { return }
-        queue.append(Outgoing(serviceUUID: CBUUID(string: Nudge.serviceUUIDString(for: targetId)), data: data, created: .now))
+    /// Writes sealed bytes to `targetId`'s phone if it's in Bluetooth range. `completion`
+    /// reports whether the phone acknowledged the write.
+    func send(_ data: Data, to targetId: String, completion: @escaping (Bool) -> Void) {
+        queue.append(Outgoing(serviceUUID: CBUUID(string: Nudge.serviceUUIDString(for: targetId)), data: data, created: .now, completion: completion))
         if centralManager == nil {
             centralManager = CBCentralManager(delegate: self, queue: nil)
         }
@@ -79,7 +77,9 @@ final class NudgeService: NSObject {
 
     private func advance() {
         guard current == nil, let centralManager, centralManager.state == .poweredOn else { return }
+        let stale = queue.filter { Date.now.timeIntervalSince($0.created) > Self.staleAfter }
         queue.removeAll { Date.now.timeIntervalSince($0.created) > Self.staleAfter }
+        stale.forEach { $0.completion(false) }
         guard !queue.isEmpty else { return }
         let next = queue.removeFirst()
         current = next
@@ -92,7 +92,7 @@ final class NudgeService: NSObject {
     }
 
     private func finishCurrent(delivered: Bool) {
-        guard current != nil else { return }
+        guard let finished = current else { return }
         if !delivered { Self.logger.info("Nudge not delivered") }
         timeout?.cancel()
         timeout = nil
@@ -102,6 +102,7 @@ final class NudgeService: NSObject {
         }
         currentPeripheral = nil
         current = nil
+        finished.completion(delivered)
         advance()
     }
 }
@@ -126,8 +127,8 @@ extension NudgeService: @MainActor CBPeripheralManagerDelegate {
     func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveWrite requests: [CBATTRequest]) {
         guard let first = requests.first else { return }
         for request in requests where request.characteristic.uuid == characteristicUUID {
-            if let value = request.value, let payload = Nudge.decode(value) {
-                onNudge?(payload)
+            if let value = request.value, value.count <= Nudge.maxPayloadBytes {
+                onReceive?(value)
             }
         }
         peripheral.respond(to: first, withResult: .success)
@@ -142,7 +143,9 @@ extension NudgeService: @MainActor CBCentralManagerDelegate {
         case .poweredOn:
             advance()
         case .unsupported, .unauthorized, .poweredOff:
+            let dropped = queue
             queue.removeAll()
+            dropped.forEach { $0.completion(false) }
             finishCurrent(delivered: false)
         default:
             break
@@ -185,7 +188,8 @@ extension NudgeService: @MainActor CBPeripheralDelegate {
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: (any Error)?) {
         guard peripheral === currentPeripheral, let current,
-              let characteristic = service.characteristics?.first(where: { $0.uuid == characteristicUUID })
+              let characteristic = service.characteristics?.first(where: { $0.uuid == characteristicUUID }),
+              current.data.count <= peripheral.maximumWriteValueLength(for: .withResponse)
         else { return finishCurrent(delivered: false) }
         peripheral.writeValue(current.data, for: characteristic, type: .withResponse)
     }

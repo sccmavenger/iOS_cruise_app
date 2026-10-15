@@ -200,7 +200,7 @@ struct MatchView: View {
         ScrollView {
             VStack(spacing: 20) {
                 if !games.awayIds.isEmpty {
-                    AwayBanner(names: games.awayIds.sorted().map(games.name(for:)))
+                    AwayBanner(names: games.awayIds.sorted().map(games.name(for:)), detail: awayDetail)
                 }
                 switch games.snapshot {
                 case .ticTacToe(let state):
@@ -232,13 +232,14 @@ struct MatchView: View {
 /// Shown while someone's app is in the background: the match is paused, not over.
 struct AwayBanner: View {
     let names: [String]
+    let detail: String
 
     var body: some View {
         Label {
             VStack(alignment: .leading, spacing: 2) {
                 Text("\(names.formatted(.list(type: .and))) stepped away")
                     .font(.subheadline.weight(.semibold))
-                Text("The game is paused. Their phone gets a nudge when it's their turn.")
+                Text(detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -250,6 +251,18 @@ struct AwayBanner: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(.regular, in: .rect(cornerRadius: 16))
         .accessibilityElement(children: .combine)
+    }
+}
+
+extension MatchView {
+    fileprivate var awayDetail: String {
+        if games.relayedMoveDelivered {
+            return "Your move reached their phone over Bluetooth. It shows here when they're back."
+        }
+        if games.isHostAway {
+            return "You can still play: your move goes to their phone over Bluetooth, and they get a notification."
+        }
+        return "Their phone gets a notification when it's their turn. The game waits up to 10 minutes."
     }
 }
 

@@ -61,6 +61,9 @@ nonisolated enum EnvelopeCodec {
         switch envelope.payload {
         case .hello(let hello):
             guard Nickname.sanitize(hello.nickname) != nil else { throw .invalidField("nickname") }
+            if let key = hello.nudgeKey {
+                guard key.count <= 64, Data(base64Encoded: key)?.count == 32 else { throw .invalidField("nudgeKey") }
+            }
         case .chat(let chat):
             let trimmed = chat.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, chat.text.count <= maxChatCharacters else {
@@ -94,7 +97,7 @@ nonisolated enum EnvelopeCodec {
             guard error.code.count <= 64, error.message.count <= maxMessageLength else {
                 throw .invalidField("error")
             }
-        case .joinRequest, .joinReject, .ready, .rematchRequest, .leave, .heartbeat:
+        case .joinRequest, .joinReject, .ready, .rematchRequest, .leave, .heartbeat, .presence:
             break
         }
     }
@@ -133,6 +136,7 @@ extension Envelope: Codable {
         case .leave: payload = .leave(try container.decode(LeavePayload.self, forKey: .payload))
         case .error: payload = .error(try container.decode(ErrorPayload.self, forKey: .payload))
         case .heartbeat: payload = .heartbeat(try container.decode(EmptyPayload.self, forKey: .payload))
+        case .presence: payload = .presence(try container.decode(PresencePayload.self, forKey: .payload))
         }
     }
 
@@ -160,6 +164,7 @@ extension Envelope: Codable {
         case .leave(let value): try container.encode(value, forKey: .payload)
         case .error(let value): try container.encode(value, forKey: .payload)
         case .heartbeat(let value): try container.encode(value, forKey: .payload)
+        case .presence(let value): try container.encode(value, forKey: .payload)
         }
     }
 }

@@ -35,7 +35,6 @@ final class NotificationManager: NSObject {
     var isChatOnScreen = false
     var isMatchOnScreen = false
 
-    @ObservationIgnored private var nudgeLimiter = Nudge.RateLimiter(interval: Nudge.receiveInterval)
     private var center: UNUserNotificationCenter { .current() }
 
     func install() {
@@ -68,18 +67,17 @@ final class NotificationManager: NSObject {
         post(title: "Your turn in \(game.displayName)", body: "Tap to jump back into the game.", thread: "game", route: .game, id: "turn")
     }
 
-    /// A friend's phone rang ours over Bluetooth while we were away. `sender` is the name this
-    /// device already knows for them; the payload's claims beyond the sender id are not trusted.
-    func nudgeReceived(_ kind: Nudge.Kind, from sender: PeerIdentity) {
-        guard nudgeLimiter.allow(sender.id, kind, at: .now) else { return }
-        switch kind {
-        case .chat:
-            unreadChatCount += 1
-            updateBadge()
-            post(title: "\(sender.nickname) sent you a message", body: "Open CruiseLAN to catch up.", thread: "chat", route: .chat)
-        case .turn(let game):
-            post(title: "Your turn in \(game.displayName)", body: "\(sender.nickname) is waiting for you.", thread: "game", route: .game, id: "turn")
-        }
+    /// A friend's phone sent a message preview over Bluetooth while we were away. `sender` is
+    /// the name this phone already knows for them; the full message arrives when they reconnect.
+    func chatNudgeReceived(from sender: PeerIdentity, preview: String?) {
+        unreadChatCount += 1
+        updateBadge()
+        post(title: sender.nickname, body: preview ?? "Sent you a message. Open CruiseLAN to read it.", thread: "chat", route: .chat)
+    }
+
+    /// A friend's phone says it's our turn.
+    func turnNudgeReceived(in game: GameType, from sender: PeerIdentity) {
+        post(title: "Your turn in \(game.displayName)", body: "\(sender.nickname) is waiting for you.", thread: "game", route: .game, id: "turn")
     }
 
     // MARK: - Posting

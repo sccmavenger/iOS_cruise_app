@@ -45,6 +45,8 @@ final class GameCoordinator {
 
     /// How long a match waits for someone whose app went to the background.
     static let awayTimeout: Duration = .seconds(10 * 60)
+    /// While someone is away, ask again this often for any nudge that hasn't been delivered.
+    static let nudgeRetryInterval: Duration = .seconds(30)
 
     let session: SessionManager
 
@@ -60,6 +62,8 @@ final class GameCoordinator {
     private(set) var invitedIds: Set<String> = []
     /// Seated players whose connection dropped mid-match; the match is paused for them.
     private(set) var awayIds: Set<String> = []
+    /// The pending move went to the away host's phone over Bluetooth; it shows when they're back.
+    private(set) var relayedMoveDelivered = false
     /// Short-lived feedback such as "That square is already taken."
     var notice: String?
 
@@ -67,11 +71,15 @@ final class GameCoordinator {
     @ObservationIgnored var onTurnStarted: ((GameType) -> Void)?
     /// The match is waiting on someone who is away; the app can nudge their phone.
     @ObservationIgnored var onNudgeNeeded: ((_ playerId: String, GameType) -> Void)?
+    /// The host is away: deliver this move to the host's phone another way (Bluetooth).
+    /// Call the completion with whether it arrived.
+    @ObservationIgnored var onRelayMove: ((_ hostId: String, _ lobbyId: UUID, MoveRequestPayload, @escaping (Bool) -> Void) -> Void)?
 
     // Host-only authoritative state.
     @ObservationIgnored private var authoritative: GameEngine.State?
     @ObservationIgnored private var seenMoveIds: Set<UUID> = []
     @ObservationIgnored private var awayTimers: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var nudgeRetry: Task<Void, Never>?
 
     init(session: SessionManager) {
         self.session = session
@@ -190,11 +198,11 @@ final class GameCoordinator {
 
     func play(_ move: GameMove) {
         guard let lobby, lobby.phase == .playing, pendingMoveId == nil else { return }
-        guard !isHostAway else {
-            notice = "\(name(for: lobby.hostId)) stepped away. Your move can be made when they're back."
+        let request = MoveRequestPayload(moveId: UUID(), baseRevision: revision, move: move)
+        if isHostAway {
+            relayToAwayHost(request, in: lobby)
             return
         }
-        let request = MoveRequestPayload(moveId: UUID(), baseRevision: revision, move: move)
         if isHost {
             hostHandleMove(request, from: localId)
         } else {
@@ -204,6 +212,35 @@ final class GameCoordinator {
                 notice = "Couldn't reach the host."
             }
         }
+    }
+
+    /// The host's app is in the background. Its game state is still in memory, so send the
+    /// move to its phone over Bluetooth; iOS wakes the app to apply it and tell the host
+    /// it's their turn. The result arrives here when the host is back.
+    private func relayToAwayHost(_ request: MoveRequestPayload, in lobby: Lobby) {
+        let hostName = name(for: lobby.hostId)
+        guard let onRelayMove else {
+            notice = "\(hostName) stepped away. Your move can be made when they're back."
+            return
+        }
+        pendingMoveId = request.moveId
+        relayedMoveDelivered = false
+        onRelayMove(lobby.hostId, lobby.id, request) { [weak self] delivered in
+            guard let self, self.pendingMoveId == request.moveId else { return }
+            if delivered {
+                self.relayedMoveDelivered = true
+            } else {
+                self.pendingMoveId = nil
+                self.notice = "Couldn't reach \(hostName)'s phone. Move closer and try again, or wait until they're back."
+            }
+        }
+    }
+
+    /// A move that arrived over Bluetooth while this host's app was in the background.
+    /// It goes through exactly the same checks as any other move.
+    func receiveRelayedMove(_ request: MoveRequestPayload, lobbyId: UUID, from playerId: String) {
+        guard isHost, lobby?.id == lobbyId else { return }
+        hostHandleMove(request, from: playerId)
     }
 
     func requestRematch() {
@@ -257,7 +294,7 @@ final class GameCoordinator {
             receiveRematchVote(ref, from: identity)
         case .leave(let leave):
             receiveLeave(leave, from: identity)
-        case .hello, .chat, .heartbeat, .error:
+        case .hello, .chat, .heartbeat, .error, .presence:
             break
         }
     }
@@ -398,6 +435,7 @@ final class GameCoordinator {
         snapshot = payload.state
         revision = payload.revision
         pendingMoveId = nil
+        relayedMoveDelivered = false
         if previous?.isFinished == true, !payload.state.isFinished { rematchVotes = [] }
         snapshotDidChange(from: previous)
     }
@@ -462,6 +500,21 @@ final class GameCoordinator {
             self?.awayTimedOut(identity)
         }
         requestNudgesIfNeeded()
+        startNudgeRetries()
+    }
+
+    /// Nudges can miss (out of range for a moment); keep asking while someone is away.
+    /// The router doesn't repeat a nudge that was already delivered.
+    private func startNudgeRetries() {
+        guard nudgeRetry == nil else { return }
+        nudgeRetry = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.nudgeRetryInterval)
+                guard let self, !self.awayIds.isEmpty, self.lobby?.phase == .playing else { break }
+                self.requestNudgesIfNeeded()
+            }
+            self?.nudgeRetry = nil
+        }
     }
 
     /// Ends the match for someone who didn't come back in time. Internal for tests.
@@ -477,6 +530,10 @@ final class GameCoordinator {
             if isHost {
                 resync(identity.id)
             } else if let lobby, identity.id == lobby.hostId {
+                // A move relayed while the host was away has been applied (or rejected) by now;
+                // the catch-up snapshot shows which.
+                pendingMoveId = nil
+                relayedMoveDelivered = false
                 // Ask explicitly too, in case the host's resend arrived before we recognized it.
                 session.send(.joinRequest(LobbyRefPayload(lobbyId: lobby.id)), sessionId: lobby.id, to: [identity.id])
             }
@@ -660,6 +717,9 @@ final class GameCoordinator {
         awayIds = []
         awayTimers.values.forEach { $0.cancel() }
         awayTimers = [:]
+        nudgeRetry?.cancel()
+        nudgeRetry = nil
+        relayedMoveDelivered = false
     }
 }
 
