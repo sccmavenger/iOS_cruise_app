@@ -4,7 +4,7 @@ import SwiftUI
 struct MatchContainerView: View {
     @Environment(GameCoordinator.self) private var games
     @Environment(AppState.self) private var app
-    @Environment(NotificationManager.self) private var notifications
+    @Environment(SessionManager.self) private var session
     @State private var confirmLeave = false
 
     var body: some View {
@@ -31,7 +31,7 @@ struct MatchContainerView: View {
                         app.selectedTab = .chat
                         app.isMatchMinimized = true
                     } label: {
-                        Label(notifications.unreadChatCount > 0 ? "Chat (\(notifications.unreadChatCount))" : "Chat", systemImage: "bubble.left.and.bubble.right")
+                        Label(session.chat.totalUnread > 0 ? "Chat (\(session.chat.totalUnread))" : "Chat", systemImage: "bubble.left.and.bubble.right")
                             .labelStyle(.titleAndIcon)
                     }
                     .accessibilityHint("Shows the chat. The game keeps going and you can come back anytime.")
@@ -75,8 +75,9 @@ struct LobbyView: View {
 
     private var me: LobbyPlayer? { lobby.player(games.localId) }
 
+    /// Connected people, plus people who are away (they get a notification and the invite when they're back).
     private var invitable: [PeerIdentity] {
-        session.connectedIdentities.filter { lobby.player($0.id) == nil }
+        session.reachableIdentities.filter { lobby.player($0.id) == nil }
     }
 
     var body: some View {
@@ -137,7 +138,14 @@ struct LobbyView: View {
                                 games.invite(identity)
                             } label: {
                                 HStack {
-                                    Text(identity.labeledName).foregroundStyle(.primary)
+                                    VStack(alignment: .leading) {
+                                        Text(identity.labeledName).foregroundStyle(.primary)
+                                        if !session.isConnected(identity.id) {
+                                            Text("Away · gets a notification")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
                                     Spacer()
                                     Text(games.invitedIds.contains(identity.id) ? "Invited" : "Invite")
                                         .fontWeight(.semibold)

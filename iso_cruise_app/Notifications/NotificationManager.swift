@@ -12,6 +12,15 @@ final class AppState {
     var selectedTab: Tab = .chat
     /// The match is tucked into the "Back to game" bar so the player can chat meanwhile.
     var isMatchMinimized = false
+    /// Navigation inside the Chat tab: the open conversation, if any.
+    var chatPath: [UUID] = []
+
+    var openConversation: UUID? { chatPath.last }
+
+    func open(conversation id: UUID) {
+        selectedTab = .chat
+        chatPath = [id]
+    }
 }
 
 /// Local notifications for new messages and "your turn", plus the unread chat count.
@@ -22,17 +31,17 @@ final class AppState {
 /// already on screen.
 @Observable
 final class NotificationManager: NSObject {
-    enum Route: String {
-        case chat, game
+    enum Route: Equatable {
+        case chat(UUID)
+        case games
+        case game
     }
 
-    private(set) var unreadChatCount = 0
     /// Set when the user taps a notification; the tab view navigates and clears it.
     var pendingRoute: Route?
 
     /// Kept current by the UI so banners aren't shown for what the user is looking at.
     var isAppActive = true
-    var isChatOnScreen = false
     var isMatchOnScreen = false
 
     private var center: UNUserNotificationCenter { .current() }
@@ -47,19 +56,9 @@ final class NotificationManager: NSObject {
 
     // MARK: - Events
 
-    func chatReceived(from identity: PeerIdentity, text: String) {
-        guard !(isAppActive && isChatOnScreen) else { return }
-        unreadChatCount += 1
-        updateBadge()
-        // The text already passed the safety filter on this device before it was shown in chat.
-        post(title: identity.nickname, body: text, thread: "chat", route: .chat)
-    }
-
-    func chatViewed() {
-        guard unreadChatCount > 0 else { return }
-        unreadChatCount = 0
-        updateBadge()
-        center.removeAllDeliveredNotifications()
+    /// A message arrived over the session. The text already passed this phone's safety filter.
+    func chatReceived(title: String, text: String, conversationId: UUID) {
+        post(title: title, body: text, thread: conversationId.uuidString, route: .chat(conversationId))
     }
 
     func turnStarted(in game: GameType) {
@@ -67,17 +66,36 @@ final class NotificationManager: NSObject {
         post(title: "Your turn in \(game.displayName)", body: "Tap to jump back into the game.", thread: "game", route: .game, id: "turn")
     }
 
-    /// A friend's phone sent a message preview over Bluetooth while we were away. `sender` is
-    /// the name this phone already knows for them; the full message arrives when they reconnect.
-    func chatNudgeReceived(from sender: PeerIdentity, preview: String?) {
-        unreadChatCount += 1
-        updateBadge()
-        post(title: sender.nickname, body: preview ?? "Sent you a message. Open CruiseLAN to read it.", thread: "chat", route: .chat)
+    /// A friend's phone sent a message preview over Bluetooth while we were away. The full
+    /// message arrives when they reconnect.
+    func chatNudgeReceived(title: String, preview: String?, conversationId: UUID) {
+        post(title: title, body: preview ?? "Sent you a message. Open CruiseLAN to read it.",
+             thread: conversationId.uuidString, route: .chat(conversationId))
     }
 
     /// A friend's phone says it's our turn.
     func turnNudgeReceived(in game: GameType, from sender: PeerIdentity) {
         post(title: "Your turn in \(game.displayName)", body: "\(sender.nickname) is waiting for you.", thread: "game", route: .game, id: "turn")
+    }
+
+    /// A friend invited us to a game while we were away. Opening the app reconnects, and the
+    /// host sends the invitation again.
+    func inviteNudgeReceived(to game: GameType, from sender: PeerIdentity) {
+        post(title: "\(sender.nickname) invited you to play \(game.displayName)", body: "Open CruiseLAN to join.",
+             thread: "invites", route: .games, id: "invite-\(sender.id)-\(game.rawValue)")
+    }
+
+    func setBadge(_ count: Int) {
+        center.setBadgeCount(count)
+    }
+
+    /// Clears delivered notifications for a conversation once it's read.
+    func clearDelivered(for conversationId: UUID) {
+        let thread = conversationId.uuidString
+        center.getDeliveredNotifications { [center] delivered in
+            let ids = delivered.filter { $0.request.content.threadIdentifier == thread }.map(\.request.identifier)
+            center.removeDeliveredNotifications(withIdentifiers: ids)
+        }
     }
 
     // MARK: - Posting
@@ -88,13 +106,13 @@ final class NotificationManager: NSObject {
         content.body = body
         content.sound = .default
         content.threadIdentifier = thread
-        content.userInfo = ["route": route.rawValue]
-        // Reusing the "turn" id replaces an older turn reminder instead of stacking them.
+        switch route {
+        case .chat(let conversationId): content.userInfo = ["route": "chat", "conversation": conversationId.uuidString]
+        case .games: content.userInfo = ["route": "games"]
+        case .game: content.userInfo = ["route": "game"]
+        }
+        // Reusing an id (like "turn") replaces the older notification instead of stacking them.
         center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
-    }
-
-    private func updateBadge() {
-        center.setBadgeCount(unreadChatCount)
     }
 }
 
@@ -105,9 +123,16 @@ extension NotificationManager: UNUserNotificationCenterDelegate {
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
-        let raw = response.notification.request.content.userInfo["route"] as? String
+        let info = response.notification.request.content.userInfo
+        let route = info["route"] as? String
+        let conversation = (info["conversation"] as? String).flatMap(UUID.init(uuidString:))
         await MainActor.run {
-            self.pendingRoute = raw.flatMap(Route.init(rawValue:))
+            switch route {
+            case "chat": self.pendingRoute = .chat(conversation ?? ChatStore.everyoneId)
+            case "games": self.pendingRoute = .games
+            case "game": self.pendingRoute = .game
+            default: break
+            }
         }
     }
 }

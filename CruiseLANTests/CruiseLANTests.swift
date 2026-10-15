@@ -492,7 +492,7 @@ struct SessionManagerTests {
     @Test("Messages sent while someone is away are held and delivered when they're back")
     func outboxForAway() throws {
         var queuedFor: [String] = []
-        session.onChatQueuedForAway = { ids, _ in queuedFor = ids }
+        session.onChatQueuedForAway = { ids, _, _ in queuedFor = ids }
         connectAndHello()
         session.handle(.peerStateChanged(peerKey, .notConnected))
         let before = transport.sent.count

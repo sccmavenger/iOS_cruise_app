@@ -50,7 +50,7 @@ No Wi-Fi plan? No problem. Chat and play Chess, Checkers, Color Match, Connect F
 CruiseLAN lets you chat and play games with people near you, with no internet connection, no accounts, and no data plan. It's made for cruises, road trips, campsites, and anywhere the Wi-Fi is expensive or missing.
 
 CHAT WITH PEOPLE NEARBY
-Pick a nickname, see who's around, and start chatting. Phones connect directly to each other over Wi-Fi and Bluetooth, with nothing in between.
+Pick a nickname, see who's around, and start chatting. Talk to everyone at once, have a private one-on-one, or start a group with just the people you pick. Phones connect directly to each other over Wi-Fi and Bluetooth, with nothing in between.
 
 FIVE GAMES TO PLAY TOGETHER
 • Chess: full rules, including castling, en passant, and promotion
@@ -60,7 +60,7 @@ FIVE GAMES TO PLAY TOGETHER
 • Tic-Tac-Toe: quick rounds and rematches
 
 KEEP PLAYING WHILE YOU CHAT
-Tuck a game away and chat while you wait. A bar above the tabs tells you when it's your turn. Switched to another app? The game pauses, and a friend's phone can nudge yours over Bluetooth when it's your move or they send you a message.
+Tuck a game away and chat while you wait. A bar above the tabs tells you when it's your turn. Phone locked or watching a movie? Friends nearby can still reach you: you'll get a notification for new messages, game invites, and your turn.
 
 BUILT FOR FAMILIES
 • An on-device safety filter blocks bad words, sexual content, and personal information like phone numbers, emails, links, social handles, and cabin numbers, before it's sent and again when it's received.

@@ -25,11 +25,18 @@ import UIKit
         }
         _demo = State(initialValue: demo)
         #endif
-        let session = SessionManager(transport: transport, profile: profile, safety: SafetyStore())
+        var identity: IdentityStore? = IdentityStore()
+        #if DEBUG
+        if demo != nil { identity = nil }
+        #endif
+        let session = SessionManager(transport: transport, profile: profile, safety: SafetyStore(), identity: identity)
         let games = GameCoordinator(session: session)
         let notifications = NotificationManager()
         notifications.install()
         let nudges = NudgeRouter(session: session, games: games, notifications: notifications, nudges: NudgeService())
+        // Start Bluetooth right away (not from a view), so a background relaunch by iOS for
+        // an incoming nudge can receive it before any UI exists.
+        if profile.nickname != nil, identity != nil { nudges.start() }
         _profile = State(initialValue: profile)
         _session = State(initialValue: session)
         _games = State(initialValue: games)

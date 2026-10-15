@@ -10,7 +10,7 @@ import Foundation
 @MainActor
 final class DemoMode {
     enum Scene: String {
-        case chat, games, chess, checkers, colorMatch, connectFour, chatWhilePlaying
+        case chat, chatList, games, chess, checkers, colorMatch, connectFour, chatWhilePlaying
     }
 
     static var requestedScene: Scene? {
@@ -47,7 +47,7 @@ final class DemoMode {
         await pause()
 
         switch scene {
-        case .chat, .games:
+        case .chat, .chatList, .games:
             mia.session.sendChat("Anyone up for chess after lunch? ♟️")
             await pause()
             leo.session.sendChat("Yes! Meet by the pool deck?")
@@ -55,6 +55,18 @@ final class DemoMode {
             session.sendChat("I'm in! Color Match first?")
             await pause()
             ava.session.sendChat("Me too 🙌 I'll host")
+            // A private chat and a group, so the chat list shows all three kinds.
+            if let sam = mia.session.identity(for: session.localId) {
+                let dm = mia.session.directConversation(with: sam)
+                mia.session.sendChat("Want to team up for trivia tonight?", in: dm.id)
+            }
+            if let sam = leo.session.identity(for: session.localId), let ava = leo.session.identity(for: ava.session.localId) {
+                let group = leo.session.createGroup(name: "Pool Crew", with: [sam, ava])
+                leo.session.sendChat("Slides open at 2!", in: group.id)
+            }
+            await pause()
+            if scene == .chatList { break }
+            if scene == .chat { app.open(conversation: ChatStore.everyoneId) }
             if scene == .games {
                 mia.games.hostLobby(.chess)
                 ava.games.hostLobby(.colorMatch)

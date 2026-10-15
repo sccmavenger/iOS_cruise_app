@@ -79,8 +79,9 @@ final class SessionManager {
     static let stepAwayGrace: Duration = .milliseconds(300)
     private static let logger = Logger(subsystem: "com.dannyguillory.cruiselan", category: "session")
 
-    /// Random per-launch identifier announced to peers. Not tied to the device or the user.
-    let localId = UUID().uuidString
+    /// Random identifier announced to peers. Not tied to the device or the user. Kept for
+    /// a few hours (see `IdentityStore`) so a relaunch in the background can still receive nudges.
+    let localId: String
     let chat = ChatStore()
     let profile: ProfileStore
     let safety: SafetyStore
@@ -102,16 +103,18 @@ final class SessionManager {
     @ObservationIgnored var onGameEnvelope: ((Envelope, PeerIdentity) -> Void)?
     @ObservationIgnored var onPeerDisconnected: ((PeerIdentity, DropReason) -> Void)?
     @ObservationIgnored var onPeerIdentified: ((PeerIdentity) -> Void)?
-    /// A chat message from someone else passed the safety filter and was added to the chat.
-    @ObservationIgnored var onChatReceived: ((PeerIdentity, String) -> Void)?
-    /// The local user sent a chat message (already filtered) while these known people were away.
-    @ObservationIgnored var onChatQueuedForAway: (([String], String) -> Void)?
+    /// A chat message from someone else passed the safety filter and was added to a conversation.
+    @ObservationIgnored var onChatReceived: ((PeerIdentity, String, UUID) -> Void)?
+    /// The local user sent a chat message (already filtered) in a conversation while these known people were away.
+    @ObservationIgnored var onChatQueuedForAway: (([String], String, UUID) -> Void)?
     /// Someone known since launch reconnected (for example, after their app was in the background).
     @ObservationIgnored var onPeerReturned: ((PeerIdentity) -> Void)?
 
     @ObservationIgnored private let transport: any PeerTransport
     @ObservationIgnored private var eventTask: Task<Void, Never>?
-    @ObservationIgnored private var nextSequence = 0
+    /// Starts at the current time in milliseconds, so it keeps increasing across relaunches
+    /// that reuse the same id (peers drop envelopes whose sequence goes backwards).
+    @ObservationIgnored private var nextSequence: Int
     @ObservationIgnored private var seenIds: Set<UUID> = []
     @ObservationIgnored private var seenOrder: [UUID] = []
     @ObservationIgnored private var lastSequenceBySender: [String: Int] = [:]
@@ -119,7 +122,7 @@ final class SessionManager {
     /// Filtered messages received per sender this session; drives auto-blocking.
     @ObservationIgnored private var filterStrikes: [String: Int] = [:]
     /// Chat this user sent while someone they'd connected with was away, by identity id.
-    @ObservationIgnored private var outbox: [String: [(text: String, date: Date)]] = [:]
+    @ObservationIgnored private var outbox: [String: [(text: String, date: Date, conversation: ConversationRef?)]] = [:]
     /// Bluetooth nudge keys (see `HelloPayload.nudgeKey`). `issued` is what this device
     /// handed to a transport peer in its hello; once that peer's identity is known it
     /// becomes `inboundNudgeKeys` (they encrypt to us). `outboundNudgeKeys` are the keys
@@ -131,6 +134,7 @@ final class SessionManager {
     /// When each known person last dropped.
     private(set) var droppedAt: [String: Date] = [:]
     @ObservationIgnored private let now: () -> Date
+    @ObservationIgnored private let identityStore: IdentityStore?
 
     init(
         transport: any PeerTransport,
@@ -138,6 +142,7 @@ final class SessionManager {
         safety: SafetyStore = SafetyStore(),
         filter: ContentFilter = .shared,
         trusted: TrustedPeersStore = TrustedPeersStore(),
+        identity: IdentityStore? = nil,
         now: @escaping () -> Date = { .now }
     ) {
         self.transport = transport
@@ -145,7 +150,20 @@ final class SessionManager {
         self.safety = safety
         self.filter = filter
         self.trusted = trusted
+        self.identityStore = identity
         self.now = now
+        nextSequence = Int(now().timeIntervalSince1970 * 1000)
+        let saved = identity?.load()
+        localId = saved?.localId ?? UUID().uuidString
+        if let saved {
+            // Friends from a few minutes ago are "away" until they reconnect.
+            for (id, nickname) in saved.known {
+                knownIdentities[id] = PeerIdentity(id: id, nickname: nickname)
+                droppedAt[id] = saved.lastActive
+            }
+            inboundNudgeKeys = saved.inboundKeys.mapValues { SymmetricKey(data: $0) }
+            outboundNudgeKeys = saved.outboundKeys.mapValues { SymmetricKey(data: $0) }
+        }
         eventTask = Task { [weak self, events = transport.events] in
             for await event in events {
                 guard let self else { return }
@@ -188,6 +206,55 @@ final class SessionManager {
     /// Chat is possible while anyone is connected, or held for someone who is away.
     var canChat: Bool {
         !connectedIdentities.isEmpty || !awayIdentityIds.isEmpty
+    }
+
+    /// Whether a message in this conversation can go anywhere right now (or be held for someone away).
+    func canChat(in conversationId: UUID) -> Bool {
+        guard let conversation = chat.conversation(conversationId) else { return false }
+        if conversation.kind == .everyone { return canChat }
+        let away = Set(awayIdentityIds)
+        return conversation.members.contains { $0.id != localId && (isConnected($0.id) || away.contains($0.id)) }
+    }
+
+    /// Whether anyone in the conversation is connected (otherwise messages are held).
+    func hasConnectedMembers(in conversationId: UUID) -> Bool {
+        guard let conversation = chat.conversation(conversationId) else { return false }
+        if conversation.kind == .everyone { return !connectedIdentities.isEmpty }
+        return conversation.members.contains { $0.id != localId && isConnected($0.id) }
+    }
+
+    /// People you can start a chat with: connected now, or away but known.
+    var reachableIdentities: [PeerIdentity] {
+        let ids = Set(connectedIdentities.map(\.id)).union(awayIdentityIds)
+        return ids.compactMap { identity(for: $0) ?? knownIdentities[$0] }.sorted { $0.nickname < $1.nickname }
+    }
+
+    /// The one-on-one chat with someone, created if needed.
+    @discardableResult
+    func directConversation(with other: PeerIdentity) -> ChatStore.Conversation {
+        chat.directConversation(local: ConversationMember(id: localId, nickname: localIdentity.nickname),
+                                other: ConversationMember(id: other.id, nickname: other.nickname))
+    }
+
+    /// A new group with the chosen people plus the local user. The name is filtered like a nickname.
+    @discardableResult
+    func createGroup(name rawName: String?, with others: [PeerIdentity]) -> ChatStore.Conversation {
+        let trimmed = rawName?.trimmingCharacters(in: .whitespacesAndNewlines).prefix(ConversationRef.maxNameLength)
+        let name = trimmed.flatMap { $0.isEmpty || !filter.check(String($0)).isAllowed ? nil : String($0) }
+        let members = [ConversationMember(id: localId, nickname: localIdentity.nickname)]
+            + others.prefix(ConversationRef.maxMembers - 1).map { ConversationMember(id: $0.id, nickname: $0.nickname) }
+        return chat.createGroup(name: name, members: members)
+    }
+
+    /// Saves the identity, keys, and known people so a background relaunch can still receive nudges.
+    private func persistIdentity() {
+        identityStore?.save(IdentityStore.Snapshot(
+            localId: localId,
+            lastActive: now(),
+            known: knownIdentities.mapValues(\.nickname),
+            inboundKeys: inboundNudgeKeys.mapValues { $0.withUnsafeBytes { Data($0) } },
+            outboundKeys: outboundNudgeKeys.mapValues { $0.withUnsafeBytes { Data($0) } }
+        ))
     }
 
     /// Key for encrypting a Bluetooth nudge to `identityId`.
@@ -233,6 +300,7 @@ final class SessionManager {
     /// Going to the background: tells connected peers we're stepping away (so they show
     /// "away", keep the game paused, and nudge us), gives that a moment to send, then suspends.
     func stepAway() async {
+        persistIdentity()
         guard status != .idle else { return }
         send(.presence(PresencePayload(away: true)))
         stepAwayPending = true
@@ -246,6 +314,7 @@ final class SessionManager {
     /// Restarts discovery after the app returns to the foreground; trusted peers reconnect on their own.
     func resume() {
         stepAwayPending = false
+        persistIdentity()
         guard status == .idle else { return }
         start()
     }
@@ -276,24 +345,29 @@ final class SessionManager {
         transport.disconnectAll()
     }
 
-    /// Sends a chat message to every connected peer after running the safety filter.
+    /// Sends a chat message to a conversation's members after running the safety filter.
+    /// "Everyone" goes to all connected people; one-on-one chats and groups go only to their members.
     @discardableResult
-    func sendChat(_ rawText: String) -> ChatSendResult {
+    func sendChat(_ rawText: String, in conversationId: UUID = ChatStore.everyoneId) -> ChatSendResult {
         let text = String(rawText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(EnvelopeCodec.maxChatCharacters))
         guard !text.isEmpty else { return .empty }
         if case .blocked(let reason) = filter.check(text) { return .filtered(reason) }
-        let away = awayIdentityIds
-        let envelope = send(.chat(ChatPayload(text: text)))
+        guard let conversation = chat.conversation(conversationId) else { return .noRecipients }
+        let members: Set<String>? = conversation.kind == .everyone ? nil : conversation.memberIds.subtracting([localId])
+        let away = awayIdentityIds.filter { members?.contains($0) ?? true }
+        let ref = conversation.ref
+        let envelope = send(.chat(ChatPayload(text: text, conversation: ref)), to: members.map { Array($0) })
         guard envelope != nil || !away.isEmpty else { return .noRecipients }
-        // Hold a copy for people who are away; they get it when they reconnect.
+        // Hold a copy for members who are away; they get it when they reconnect.
         let cutoff = now().addingTimeInterval(-Self.outboxLifetime)
         for id in away {
             var held = (outbox[id] ?? []).filter { $0.date > cutoff }
-            held.append((text, now()))
+            held.append((text, now(), ref))
             outbox[id] = Array(held.suffix(Self.outboxLimit))
         }
-        if !away.isEmpty { onChatQueuedForAway?(away, text) }
-        chat.appendText(id: envelope?.id ?? UUID(), senderId: localId, senderName: localIdentity.nickname, text: text, isLocal: true)
+        if !away.isEmpty { onChatQueuedForAway?(away, text, conversationId) }
+        chat.appendText(id: envelope?.id ?? UUID(), senderId: localId, senderName: localIdentity.nickname, text: text,
+                        isLocal: true, conversationId: conversationId)
         return .sent
     }
 
@@ -301,7 +375,7 @@ final class SessionManager {
         guard let held = outbox.removeValue(forKey: identity.id) else { return }
         let cutoff = now().addingTimeInterval(-Self.outboxLifetime)
         for message in held where message.date > cutoff {
-            send(.chat(ChatPayload(text: message.text)), to: [identity.id])
+            send(.chat(ChatPayload(text: message.text, conversation: message.conversation)), to: [identity.id])
         }
     }
 
@@ -327,6 +401,7 @@ final class SessionManager {
             outboundNudgeKeys[identity.id] = nil
             steppedAwayIds.remove(identity.id)
             chat.removeMessages(from: identity.id)
+            persistIdentity()
             onPeerDisconnected?(identity, .blocked)
         }
         chat.appendSystem("You blocked \(name). You won't see their messages or invitations.")
@@ -556,6 +631,7 @@ final class SessionManager {
             }
             trusted.trust(transport.fingerprint(for: key))
             chat.appendSystem(returning ? "\(identity.labeledName) is back" : "\(identity.labeledName) connected")
+            persistIdentity()
             deliverOutbox(to: identity)
             if returning { onPeerReturned?(identity) }
             onPeerIdentified?(identity)
@@ -580,8 +656,24 @@ final class SessionManager {
                 }
                 return
             }
-            chat.appendText(id: envelope.id, senderId: identity.id, senderName: identity.nickname, text: chatPayload.text, isLocal: false)
-            onChatReceived?(identity, chatPayload.text)
+            var conversationId = ChatStore.everyoneId
+            if let ref = chatPayload.conversation {
+                // Only members may write to a conversation, and only to one we're in.
+                let ids = Set(ref.members.map(\.id))
+                guard ids.contains(identity.id), ids.contains(localId) else { return reject("not a member") }
+                // Names relayed by another phone get the same filtering as names we see directly.
+                var safe = ref
+                safe.members = ref.members.map { member in
+                    ConversationMember(id: member.id, nickname: knownIdentities[member.id]?.nickname
+                                       ?? (member.id == localId ? localIdentity.nickname : filter.safeNickname(member.nickname)))
+                }
+                safe.name = ref.name.flatMap { filter.check($0).isAllowed ? $0 : nil }
+                guard chat.adopt(safe) else { return reject("conversation mismatch") }
+                conversationId = ref.id
+            }
+            chat.appendText(id: envelope.id, senderId: identity.id, senderName: identity.nickname, text: chatPayload.text,
+                            isLocal: false, conversationId: conversationId)
+            onChatReceived?(identity, chatPayload.text, conversationId)
         case .heartbeat:
             break
         case .presence(let presence):

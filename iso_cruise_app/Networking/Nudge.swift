@@ -17,16 +17,20 @@ import Foundation
 nonisolated enum Nudge {
     enum Kind: Codable, Equatable, Sendable {
         /// A chat message. `preview` is the start of the text, already filtered by the sender.
-        case chat(preview: String?)
+        /// `conversationId` is nil for "Everyone".
+        case chat(preview: String?, conversationId: UUID?)
         case turn(GameType)
+        /// An invitation to a game the sender is hosting.
+        case invite(GameType)
         /// A move for the host to apply while it's in the background.
         case move(lobbyId: UUID, request: MoveRequestPayload)
 
         /// Repeats of the same topic are rate-limited; every move is distinct.
         var topic: String? {
             switch self {
-            case .chat: "chat"
+            case .chat(_, let conversationId): "chat-\(conversationId?.uuidString ?? "everyone")"
             case .turn(let game): "turn-\(game.rawValue)"
+            case .invite(let game): "invite-\(game.rawValue)"
             case .move: nil
             }
         }

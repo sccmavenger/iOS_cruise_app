@@ -3,7 +3,7 @@ import Foundation
 /// Connects the session, the games, notifications, and the Bluetooth `NudgeService`.
 ///
 /// Outgoing: seals nudges with the per-pair key and sends them to people who are away:
-/// chat previews, "your turn", and moves for an away host. Topics are retried by the
+/// chat previews, "your turn", game invites, and moves for an away host. Topics are retried by the
 /// caller until delivered, then not repeated for a while.
 ///
 /// Incoming: opens each write (rejecting anything not sealed by a known, unblocked
@@ -26,11 +26,16 @@ final class NudgeRouter {
         self.notifications = notifications
         self.nudges = nudges
 
-        session.onChatReceived = { [notifications] identity, text in
-            notifications.chatReceived(from: identity, text: text)
+        session.onChatReceived = { [weak self] identity, text, conversationId in
+            guard let self else { return }
+            self.notifications.setBadge(self.session.chat.totalUnread)
+            // No banner for the conversation that's on screen.
+            guard self.session.chat.visibleConversationId != conversationId else { return }
+            self.notifications.chatReceived(title: self.title(for: identity, in: conversationId), text: text, conversationId: conversationId)
         }
-        session.onChatQueuedForAway = { [weak self] ids, text in
-            for id in ids { self?.send(.chat(preview: Nudge.preview(of: text)), to: id) }
+        session.onChatQueuedForAway = { [weak self] ids, text, conversationId in
+            let id = conversationId == ChatStore.everyoneId ? nil : conversationId
+            for person in ids { self?.send(.chat(preview: Nudge.preview(of: text), conversationId: id), to: person) }
         }
         session.onPeerReturned = { [weak self] identity in
             self?.delivered.forget(identity.id)
@@ -40,6 +45,9 @@ final class NudgeRouter {
         }
         games.onNudgeNeeded = { [weak self] playerId, game in
             self?.send(.turn(game), to: playerId)
+        }
+        games.onInviteAway = { [weak self] playerId, game in
+            self?.send(.invite(game), to: playerId)
         }
         games.onRelayMove = { [weak self] hostId, lobbyId, request, completion in
             guard let self else { return completion(false) }
@@ -60,7 +68,7 @@ final class NudgeRouter {
     func send(_ kind: Nudge.Kind, to personId: String, completion: ((Bool) -> Void)? = nil) {
         let topic = kind.topic
         if let topic {
-            let interval = topic == "chat" ? Nudge.chatDeliveredInterval : Nudge.deliveredInterval
+            let interval = topic.hasPrefix("chat") ? Nudge.chatDeliveredInterval : Nudge.deliveredInterval
             guard delivered.isAllowed(personId, topic, at: .now, interval: interval),
                   inFlight.insert("\(personId)|\(topic)").inserted
             else { completion?(false); return }
@@ -81,6 +89,14 @@ final class NudgeRouter {
         }
     }
 
+    /// "Mia" for one-on-one and Everyone chats, "Mia · Pool Crew" for groups.
+    private func title(for sender: PeerIdentity, in conversationId: UUID) -> String {
+        guard let conversation = session.chat.conversation(conversationId), conversation.kind == .group else {
+            return sender.nickname
+        }
+        return "\(sender.nickname) · \(session.chat.title(of: conversation, localId: session.localId))"
+    }
+
     // MARK: - Incoming
 
     func receive(_ data: Data) {
@@ -90,15 +106,22 @@ final class NudgeRouter {
         else { return }
 
         switch message.kind {
-        case .chat(let preview):
+        case .chat(let preview, let conversationId):
             // If they're connected, the real message arrives over the session instead.
-            guard !session.isConnected(from), received.allow(from, "chat", at: .now) else { return }
+            guard !session.isConnected(from), received.allow(from, message.kind.topic ?? "chat", at: .now) else { return }
             // Filtered again here, like every message this phone shows.
             let safePreview = preview.flatMap { session.filter.check($0).isAllowed ? $0 : nil }
-            notifications.chatNudgeReceived(from: sender, preview: safePreview)
+            // nil is "Everyone". A conversation we don't know yet (a brand-new group) is filed
+            // under the sender for now; the real message lands in the right place on return.
+            let target = conversationId.map { session.chat.conversation($0)?.id ?? session.directConversation(with: sender).id }
+                ?? ChatStore.everyoneId
+            notifications.chatNudgeReceived(title: title(for: sender, in: target), preview: safePreview, conversationId: target)
         case .turn(let game):
             guard !session.isConnected(from), received.allow(from, "turn-\(game.rawValue)", at: .now) else { return }
             notifications.turnNudgeReceived(in: game, from: sender)
+        case .invite(let game):
+            guard received.allow(from, "invite-\(game.rawValue)", at: .now) else { return }
+            notifications.inviteNudgeReceived(to: game, from: sender)
         case .move(let lobbyId, let request):
             games.receiveRelayedMove(request, lobbyId: lobbyId, from: from)
         }

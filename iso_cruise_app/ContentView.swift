@@ -43,6 +43,7 @@ struct MainTabView: View {
     @Environment(GameCoordinator.self) private var games
     @Environment(AppState.self) private var app
     @Environment(NotificationManager.self) private var notifications
+    @Environment(SessionManager.self) private var session
     /// Driven from the lobby state with a short delay so any open sheet can finish
     /// dismissing first; UIKit drops a presentation that starts while another is closing.
     @State private var showMatch = false
@@ -53,7 +54,7 @@ struct MainTabView: View {
             Tab("Chat", systemImage: "bubble.left.and.bubble.right.fill", value: AppState.Tab.chat) {
                 ChatView()
             }
-            .badge(notifications.unreadChatCount)
+            .badge(session.chat.totalUnread)
             Tab("Games", systemImage: "gamecontroller.fill", value: AppState.Tab.games) {
                 GamesHomeView()
             }
@@ -85,12 +86,13 @@ struct MainTabView: View {
             // If the system dropped the cover while a match is still active, bring it back.
             if !showing, games.lobby != nil, !app.isMatchMinimized { presentMatchSoon() }
         }
-        .onChange(of: isChatOnScreen, initial: true) { _, onScreen in
-            notifications.isChatOnScreen = onScreen
-            if onScreen { notifications.chatViewed() }
+        // The conversation on screen (if any) isn't counted unread and gets no banners.
+        .onChange(of: visibleConversation, initial: true) { _, id in
+            session.chat.visibleConversationId = id
+            if let id { notifications.clearDelivered(for: id) }
         }
-        .onChange(of: notifications.isAppActive) {
-            if isChatOnScreen, notifications.isAppActive { notifications.chatViewed() }
+        .onChange(of: session.chat.totalUnread, initial: true) { _, count in
+            notifications.setBadge(count)
         }
         .onChange(of: showMatch, initial: true) { _, showing in
             notifications.isMatchOnScreen = showing
@@ -115,16 +117,19 @@ struct MainTabView: View {
         }
     }
 
-    private var isChatOnScreen: Bool {
-        app.selectedTab == .chat && !showMatch
+    private var visibleConversation: UUID? {
+        guard notifications.isAppActive, app.selectedTab == .chat, !showMatch else { return nil }
+        return app.openConversation
     }
 
     /// Navigates for a tapped notification.
     private func open(_ route: NotificationManager.Route) {
         switch route {
-        case .chat:
-            app.selectedTab = .chat
+        case .chat(let id):
+            if session.chat.conversation(id) != nil { app.open(conversation: id) } else { app.selectedTab = .chat }
             if games.lobby != nil { app.isMatchMinimized = true }
+        case .games:
+            app.selectedTab = .games
         case .game:
             if games.lobby != nil { app.isMatchMinimized = false }
         }

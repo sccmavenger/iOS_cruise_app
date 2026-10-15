@@ -17,6 +17,9 @@ final class NudgeService: NSObject {
     /// Phones advertising in the background are discovered more slowly, so this is generous.
     private static let deliveryTimeout: Duration = .seconds(25)
     private static let staleAfter: TimeInterval = 90
+    /// Lets iOS relaunch CruiseLAN in the background for an incoming nudge if it quit the app
+    /// to free memory. Must stay the same across launches.
+    private static let restoreIdentifier = "com.dannyguillory.cruiselan.nudge.peripheral"
 
     /// Called with the raw bytes of every write; `NudgeRouter` opens and validates them.
     var onReceive: ((Data) -> Void)?
@@ -46,7 +49,8 @@ final class NudgeService: NSObject {
             publish(on: peripheralManager)
         } else {
             // Creating the manager triggers the Bluetooth permission prompt the first time.
-            peripheralManager = CBPeripheralManager(delegate: self, queue: nil)
+            peripheralManager = CBPeripheralManager(delegate: self, queue: nil,
+                                                    options: [CBPeripheralManagerOptionRestoreIdentifierKey: Self.restoreIdentifier])
         }
     }
 
@@ -112,6 +116,12 @@ final class NudgeService: NSObject {
 extension NudgeService: @MainActor CBPeripheralManagerDelegate {
     func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
         if peripheral.state == .poweredOn { publish(on: peripheral) }
+    }
+
+    /// iOS relaunched the app to handle Bluetooth. The service is republished on power-on
+    /// with the same UUID, because the session identity was restored from the Keychain.
+    func peripheralManager(_ peripheral: CBPeripheralManager, willRestoreState dict: [String: Any]) {
+        Self.logger.info("Restored nudge peripheral")
     }
 
     func peripheralManager(_ peripheral: CBPeripheralManager, didAdd service: CBService, error: (any Error)?) {

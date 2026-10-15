@@ -71,6 +71,8 @@ final class GameCoordinator {
     @ObservationIgnored var onTurnStarted: ((GameType) -> Void)?
     /// The match is waiting on someone who is away; the app can nudge their phone.
     @ObservationIgnored var onNudgeNeeded: ((_ playerId: String, GameType) -> Void)?
+    /// The host invited someone who is away; the app can nudge their phone.
+    @ObservationIgnored var onInviteAway: ((_ playerId: String, GameType) -> Void)?
     /// The host is away: deliver this move to the host's phone another way (Bluetooth).
     /// Call the completion with whether it arrived.
     @ObservationIgnored var onRelayMove: ((_ hostId: String, _ lobbyId: UUID, MoveRequestPayload, @escaping (Bool) -> Void) -> Void)?
@@ -146,11 +148,16 @@ final class GameCoordinator {
         broadcastOffer()
     }
 
-    /// Sends a direct invitation to one connected peer.
+    /// Invites one person. Connected people get the invitation now; someone who is away
+    /// gets a notification, and the invitation when they reconnect.
     func invite(_ identity: PeerIdentity) {
         guard let lobby, isHost, lobby.phase == .lobby, !lobby.isFull, lobby.player(identity.id) == nil else { return }
         invitedIds.insert(identity.id)
-        session.send(.lobbyOffer(offerPayload(for: lobby, invitedPlayerId: identity.id)), sessionId: lobby.id, to: [identity.id])
+        if session.isConnected(identity.id) {
+            session.send(.lobbyOffer(offerPayload(for: lobby, invitedPlayerId: identity.id)), sessionId: lobby.id, to: [identity.id])
+        } else {
+            onInviteAway?(identity.id, lobby.gameType)
+        }
     }
 
     func join(_ offer: Offer) {
@@ -480,7 +487,7 @@ final class GameCoordinator {
         if let joining = joiningLobbyId, offers[joining] == nil {
             joiningLobbyId = nil
         }
-        invitedIds.remove(identity.id)
+        if reason == .blocked { invitedIds.remove(identity.id) }
         // A dropped link mid-match is usually an app switch: pause instead of ending.
         if reason == .connectionLost, let lobby, lobby.phase == .playing, lobby.seats.contains(identity.id) {
             markAway(identity)
@@ -538,9 +545,10 @@ final class GameCoordinator {
                 session.send(.joinRequest(LobbyRefPayload(lobbyId: lobby.id)), sessionId: lobby.id, to: [identity.id])
             }
         }
-        // Let newly connected peers see an open lobby.
-        guard let lobby, isHost, lobby.phase == .lobby, !lobby.isFull else { return }
-        session.send(.lobbyOffer(offerPayload(for: lobby, invitedPlayerId: nil)), sessionId: lobby.id, to: [identity.id])
+        // Let newly connected peers see an open lobby, and repeat an invitation sent while they were away.
+        guard let lobby, isHost, lobby.phase == .lobby, !lobby.isFull, lobby.player(identity.id) == nil else { return }
+        let invited = invitedIds.contains(identity.id) ? identity.id : nil
+        session.send(.lobbyOffer(offerPayload(for: lobby, invitedPlayerId: invited)), sessionId: lobby.id, to: [identity.id])
     }
 
     /// Handles a member leaving or dropping, from either side of the host relationship.

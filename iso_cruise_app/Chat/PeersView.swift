@@ -5,6 +5,7 @@ import UIKit
 /// what to check when nobody shows up.
 struct PeersView: View {
     @Environment(SessionManager.self) private var session
+    @Environment(AppState.self) private var app
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     /// Ticks every few seconds so the troubleshooting tips can appear after a delay.
@@ -36,9 +37,14 @@ struct PeersView: View {
                                 Button("Block", systemImage: "hand.raised", role: .destructive) {
                                     session.block(peer.key)
                                 }
+                                if let identity = peer.identity {
+                                    Button("Message", systemImage: "bubble.left") { message(identity) }
+                                        .tint(Theme.teal)
+                                }
                             }
                             .contextMenu {
                                 if let identity = peer.identity {
+                                    Button("Message", systemImage: "bubble.left") { message(identity) }
                                     Button("Report…", systemImage: "exclamationmark.bubble") {
                                         reportTarget = ReportTarget(identityId: identity.id, name: identity.nickname, message: nil)
                                     }
@@ -103,7 +109,7 @@ struct PeersView: View {
                             .accessibilityLabel("Searching")
                     }
                 } footer: {
-                    Text("Only people running CruiseLAN appear here. They must accept your request before you can chat. Swipe left on someone you're connected to if you need to block them.")
+                    Text("Only people running CruiseLAN appear here. They must accept your request before you can chat. Swipe left on someone you're connected to for a private chat, or to block them.")
                 }
 
                 if shouldShowTroubleshooting(at: clock) {
@@ -129,6 +135,13 @@ struct PeersView: View {
                 }
             }
         }
+    }
+
+    /// Opens (or starts) a one-on-one chat.
+    private func message(_ identity: PeerIdentity) {
+        let conversation = session.directConversation(with: identity)
+        dismiss()
+        app.open(conversation: conversation.id)
     }
 
     private func shouldShowTroubleshooting(at date: Date) -> Bool {

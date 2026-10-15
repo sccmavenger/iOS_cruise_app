@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Every message exchanged between peers is wrapped in a versioned envelope.
@@ -118,6 +119,53 @@ nonisolated struct PresencePayload: Codable, Equatable, Sendable {
 
 nonisolated struct ChatPayload: Codable, Equatable, Sendable {
     var text: String
+    /// Which conversation the message belongs to. `nil` means "Everyone" (and is what
+    /// older builds send).
+    var conversation: ConversationRef? = nil
+}
+
+nonisolated struct ConversationMember: Codable, Equatable, Hashable, Sendable {
+    var id: String
+    var nickname: String
+}
+
+/// Describes a one-on-one chat or group so every member files the message in the same place.
+nonisolated struct ConversationRef: Codable, Equatable, Sendable {
+    enum Kind: String, Codable, Sendable {
+        case direct, group
+    }
+
+    static let maxMembers = 8
+    static let maxNameLength = 30
+
+    var id: UUID
+    var kind: Kind
+    var name: String?
+    /// Everyone in the conversation, including the sender.
+    var members: [ConversationMember]
+
+    /// Both phones derive the same id for a one-on-one chat, so it never needs negotiating.
+    static func directId(_ a: String, _ b: String) -> UUID {
+        let pair = [a, b].sorted().joined(separator: "|")
+        let digest = Array(SHA256.hash(data: Data("cruiselan.dm.v1|\(pair)".utf8)))
+        return UUID(uuid: (digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+                           digest[8], digest[9], digest[10], digest[11], digest[12], digest[13], digest[14], digest[15]))
+    }
+
+    var isStructurallyValid: Bool {
+        let ids = members.map(\.id)
+        guard (2...Self.maxMembers).contains(members.count),
+              Set(ids).count == ids.count,
+              ids.allSatisfy({ !$0.isEmpty && $0.count <= EnvelopeCodec.maxSenderIdLength }),
+              members.allSatisfy({ Nickname.sanitize($0.nickname) != nil })
+        else { return false }
+        switch kind {
+        case .direct:
+            return members.count == 2 && name == nil && id == Self.directId(ids[0], ids[1])
+        case .group:
+            return name.map { !$0.isEmpty && $0.count <= Self.maxNameLength } ?? true
+        }
+    }
 }
 
 nonisolated enum GameType: String, Codable, Sendable, CaseIterable, Identifiable {

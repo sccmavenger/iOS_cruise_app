@@ -69,6 +69,9 @@ nonisolated enum EnvelopeCodec {
             guard !trimmed.isEmpty, chat.text.count <= maxChatCharacters else {
                 throw .invalidField("text")
             }
+            if let conversation = chat.conversation, !conversation.isStructurallyValid {
+                throw .invalidField("conversation")
+            }
         case .lobbyOffer(let offer):
             guard (offer.gameType.minPlayers...offer.gameType.maxPlayers).contains(offer.maxSeats),
                   (0...offer.maxSeats).contains(offer.seatsTaken),

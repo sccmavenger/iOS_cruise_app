@@ -23,7 +23,7 @@ struct NudgeTests {
 
     @Test("Sealed nudges open only with the pair's key and keep their content")
     func sealAndOpen() throws {
-        let original = message(.chat(preview: "See you at the pool"))
+        let original = message(.chat(preview: "See you at the pool", conversationId: UUID()))
         let data = try #require(Nudge.seal(original, from: sender, key: key))
         let opened = try #require(Nudge.open(data, key: { $0 == sender ? key : nil }))
         #expect(opened.from == sender)
@@ -58,7 +58,7 @@ struct NudgeTests {
         let request = MoveRequestPayload(moveId: UUID(), baseRevision: 9_999, move: .colorMatch(.catchOne(target: UUID().uuidString)))
         let data = try #require(Nudge.seal(message(.move(lobbyId: UUID(), request: request)), from: sender, key: key))
         #expect(data.count < Nudge.maxPayloadBytes)
-        let long = try #require(Nudge.seal(message(.chat(preview: Nudge.preview(of: String(repeating: "🛳️", count: 200)))), from: sender, key: key))
+        let long = try #require(Nudge.seal(message(.chat(preview: Nudge.preview(of: String(repeating: "🛳️", count: 200)), conversationId: UUID())), from: sender, key: key))
         #expect(long.count < Nudge.maxPayloadBytes)
     }
 
@@ -96,5 +96,28 @@ struct NudgeTests {
         results.append(limiter.allow("a", "chat", at: start.addingTimeInterval(32)))
         #expect(results == [true, false, true, true, true, true])
         #expect(Nudge.Kind.move(lobbyId: UUID(), request: MoveRequestPayload(moveId: UUID(), baseRevision: 0, move: .ticTacToe(cell: 0))).topic == nil)
+    }
+
+    @Test("The saved identity is reused while recent and replaced after it expires")
+    func identityStore() {
+        var clock = Date.now
+        let store = IdentityStore(service: "test.identity.\(UUID().uuidString)", now: { clock })
+        defer { store.clear() }
+        let key = Data(repeating: 7, count: 32)
+        let snapshot = IdentityStore.Snapshot(localId: "me", lastActive: clock, known: ["a": "Alex"],
+                                              inboundKeys: ["a": key], outboundKeys: ["a": key])
+        store.save(snapshot)
+        #expect(store.load() == snapshot)
+        clock = clock.addingTimeInterval(IdentityStore.lifetime + 1)
+        #expect(store.load() == nil)
+    }
+
+    @Test("Chat nudges are rate-limited per conversation")
+    func chatTopics() {
+        let a = Nudge.Kind.chat(preview: "x", conversationId: UUID()).topic
+        let b = Nudge.Kind.chat(preview: "x", conversationId: UUID()).topic
+        #expect(a != b)
+        #expect(Nudge.Kind.chat(preview: nil, conversationId: nil).topic == "chat-everyone")
+        #expect(Nudge.Kind.invite(.chess).topic == "invite-chess")
     }
 }

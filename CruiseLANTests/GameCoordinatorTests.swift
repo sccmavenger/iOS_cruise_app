@@ -77,15 +77,27 @@ final class FakeNetwork {
         b.session.handle(.peerStateChanged(keyForA, .notConnected))
     }
 
+    /// Like MultipeerConnectivity, deliveries are in order and one at a time: a message sent
+    /// while another is being handled waits until that one finishes.
+    private var pending: [(Data, Node, PeerKey)] = []
+    private var isDelivering = false
+
     fileprivate func deliver(_ data: Data, from sender: Node, toKey key: PeerKey) {
-        guard let receiver = nodes.first(where: { sender.keys[ObjectIdentifier($0)] == key }),
-              let senderKey = receiver.keys[ObjectIdentifier(sender)]
-        else { return }
-        if let envelope = try? EnvelopeCodec.decode(data) {
-            log.append((sender.name, receiver.name, envelope))
+        pending.append((data, sender, key))
+        guard !isDelivering else { return }
+        isDelivering = true
+        defer { isDelivering = false }
+        while !pending.isEmpty {
+            let (data, sender, key) = pending.removeFirst()
+            guard let receiver = nodes.first(where: { sender.keys[ObjectIdentifier($0)] == key }),
+                  let senderKey = receiver.keys[ObjectIdentifier(sender)]
+            else { continue }
+            if let envelope = try? EnvelopeCodec.decode(data) {
+                log.append((sender.name, receiver.name, envelope))
+            }
+            if let interceptor, !interceptor(data, sender, receiver) { continue }
+            receiver.session.handle(.received(data, from: senderKey))
         }
-        if let interceptor, !interceptor(data, sender, receiver) { return }
-        receiver.session.handle(.received(data, from: senderKey))
     }
 
     /// Sends raw bytes from one node to another, bypassing the sender's session.
@@ -374,6 +386,102 @@ struct GameCoordinatorTests {
         host.games.receiveRelayedMove(bogus, lobbyId: UUID(), from: guest.id)
         host.games.receiveRelayedMove(bogus, lobbyId: lobbyId, from: "stranger")
         #expect(host.games.revision == 0)
+    }
+
+    // MARK: - Conversations
+
+    @Test("A one-on-one chat reaches only the other person, in the same conversation on both phones")
+    func directChat() throws {
+        let third = network.addNode("Tess")
+        network.connect(third, host)
+        network.connect(third, guest)
+        let guestIdentity = try #require(host.session.identity(for: guest.id))
+        let dm = host.session.directConversation(with: guestIdentity)
+        #expect(host.session.sendChat("Just us", in: dm.id) == .sent)
+
+        #expect(guest.session.chat.messages(in: dm.id).map(\.text) == ["Just us"])
+        #expect(guest.session.chat.conversation(dm.id)?.kind == .direct)
+        #expect(guest.session.chat.unread[dm.id] == 1)
+        #expect(!third.session.chat.messages.contains { $0.text == "Just us" })
+        // The guest replies in the same chat.
+        #expect(guest.session.sendChat("Hi back", in: dm.id) == .sent)
+        #expect(host.session.chat.messages(in: dm.id).map(\.text) == ["Just us", "Hi back"])
+    }
+
+    @Test("A group reaches only its members and keeps its name")
+    func groupChat() throws {
+        let third = network.addNode("Tess"), fourth = network.addNode("Dev")
+        for node in [third, fourth] {
+            network.connect(node, host)
+            network.connect(node, guest)
+        }
+        network.connect(third, fourth)
+        let members = try [guest, third].map { try #require(host.session.identity(for: $0.id)) }
+        let group = host.session.createGroup(name: "Pool Crew", with: members)
+        #expect(host.session.sendChat("Pool at 3?", in: group.id) == .sent)
+
+        for member in [guest, third] {
+            #expect(member.session.chat.messages(in: group.id).map(\.text) == ["Pool at 3?"])
+            #expect(member.session.chat.conversation(group.id)?.name == "Pool Crew")
+        }
+        #expect(!fourth.session.chat.messages.contains { $0.text == "Pool at 3?" })
+        // A member replies to the whole group.
+        #expect(third.session.sendChat("Yes!", in: group.id) == .sent)
+        #expect(guest.session.chat.messages(in: group.id).map(\.text) == ["Pool at 3?", "Yes!"])
+    }
+
+    @Test("Messages claiming a conversation the sender isn't in, or changing a group's members, are rejected")
+    func conversationSpoofing() throws {
+        let third = network.addNode("Tess")
+        network.connect(third, host)
+        network.connect(third, guest)
+        let guestIdentity = try #require(host.session.identity(for: guest.id))
+        let group = host.session.createGroup(name: nil, with: [guestIdentity])
+        host.session.sendChat("hello group", in: group.id)
+
+        // Tess isn't a member but claims to be writing in the group with a different member list.
+        var forged = try #require(group.ref)
+        forged.members.append(ConversationMember(id: third.id, nickname: "Tess"))
+        third.session.send(.chat(ChatPayload(text: "let me in", conversation: forged)), to: [guest.id])
+        #expect(!guest.session.chat.messages.contains { $0.text == "let me in" })
+
+        // A conversation that doesn't include the recipient is dropped too.
+        let elsewhere = ConversationRef(id: UUID(), kind: .group, name: nil,
+                                        members: [ConversationMember(id: third.id, nickname: "Tess"), ConversationMember(id: host.id, nickname: "Hana")])
+        third.session.send(.chat(ChatPayload(text: "not for you", conversation: elsewhere)), to: [guest.id])
+        #expect(!guest.session.chat.messages.contains { $0.text == "not for you" })
+    }
+
+    @Test("A private message to someone away is held and lands in the right chat when they're back")
+    func directChatWhileAway() throws {
+        var queued: (ids: [String], conversation: UUID)?
+        host.session.onChatQueuedForAway = { ids, _, conversation in queued = (ids, conversation) }
+        let guestIdentity = try #require(host.session.identity(for: guest.id))
+        let dm = host.session.directConversation(with: guestIdentity)
+        network.disconnect(host, guest)
+        #expect(host.session.canChat(in: dm.id))
+        #expect(host.session.sendChat("Dinner at 7", in: dm.id) == .sent)
+        #expect(queued?.ids == [guest.id])
+        #expect(queued?.conversation == dm.id)
+
+        network.connect(host, guest)
+        #expect(guest.session.chat.messages(in: dm.id).map(\.text) == ["Dinner at 7"])
+    }
+
+    @Test("Inviting someone who is away nudges them, and the invitation arrives when they're back")
+    func inviteWhileAway() throws {
+        var invited: [(String, GameType)] = []
+        host.games.onInviteAway = { invited.append(($0, $1)) }
+        network.disconnect(host, guest)
+        host.games.hostLobby(.chess)
+        let guestIdentity = try #require(host.session.knownIdentities[guest.id])
+        host.games.invite(guestIdentity)
+        #expect(invited.map(\.0) == [guest.id])
+        #expect(invited.map(\.1) == [.chess])
+        #expect(guest.games.invitation == nil)
+
+        network.connect(host, guest)
+        #expect(guest.games.invitation?.payload.gameType == .chess)
     }
 
     @Test("Turn hooks: the player whose turn starts is told, and an away player is nudged")
