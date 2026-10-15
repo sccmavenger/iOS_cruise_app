@@ -9,12 +9,16 @@ nonisolated enum GameEngine {
         case ticTacToe(TicTacToeState)
         case connectFour(ConnectFourState)
         case colorMatch(ColorMatchState)
+        case checkers(CheckersState)
+        case chess(ChessState)
 
         var isFinished: Bool {
             switch self {
             case .ticTacToe(let state): state.outcome != nil
             case .connectFour(let state): state.outcome != nil
             case .colorMatch(let state): state.roundResult != nil
+            case .checkers(let state): state.outcome != nil
+            case .chess(let state): state.outcome != nil
             }
         }
     }
@@ -31,6 +35,8 @@ nonisolated enum GameEngine {
         case .ticTacToe: return .ticTacToe(TicTacToeRules.newGame(players: seats))
         case .connectFour: return .connectFour(ConnectFourRules.newGame(players: seats))
         case .colorMatch: return .colorMatch(ColorMatchRules.newMatch(players: seats, using: &rng))
+        case .checkers: return .checkers(CheckersRules.newGame(players: seats))
+        case .chess: return .chess(ChessRules.newGame(players: seats))
         }
     }
 
@@ -43,6 +49,10 @@ nonisolated enum GameEngine {
             return .connectFour(try ConnectFourRules.apply(column: column, by: playerId, to: board))
         case (.colorMatch(let table), .colorMatch(let action)):
             return .colorMatch(try ColorMatchRules.apply(action, by: playerId, to: table, using: &rng))
+        case (.checkers(let board), .checkers(let action)):
+            return .checkers(try CheckersRules.apply(action, by: playerId, to: board))
+        case (.chess(let board), .chess(let action)):
+            return .chess(try ChessRules.apply(action, by: playerId, to: board))
         default:
             throw .wrongGame
         }
@@ -55,6 +65,8 @@ nonisolated enum GameEngine {
         case .ticTacToe(let board): return .ticTacToe(TicTacToeRules.rematch(from: board))
         case .connectFour(let board): return .connectFour(ConnectFourRules.rematch(from: board))
         case .colorMatch(let table): return .colorMatch(ColorMatchRules.nextRound(from: table, using: &rng))
+        case .checkers(let board): return .checkers(CheckersRules.rematch(from: board))
+        case .chess(let board): return .chess(ChessRules.rematch(from: board))
         }
     }
 
@@ -64,19 +76,18 @@ nonisolated enum GameEngine {
         case .ticTacToe(let board): .ticTacToe(board)
         case .connectFour(let board): .connectFour(board)
         case .colorMatch(let table): .colorMatch(ColorMatchRules.snapshot(of: table, for: playerId))
+        case .checkers(let board): .checkers(board)
+        case .chess(let board): .chess(board)
         }
     }
 
     /// Moves that aren't tied to whose turn it is and may legitimately be sent out of
-    /// order (Call One!/Catch!), so they skip the stale-revision check.
+    /// order (Call One!/Catch!, resigning), so they skip the stale-revision check.
     static func isTurnIndependent(_ move: GameMove) -> Bool {
-        if case .colorMatch(let action) = move {
-            switch action {
-            case .callOne, .catchOne: return true
-            default: return false
-            }
+        switch move {
+        case .colorMatch(.callOne), .colorMatch(.catchOne(_)), .checkers(.resign), .chess(.resign): true
+        default: false
         }
-        return false
     }
 }
 

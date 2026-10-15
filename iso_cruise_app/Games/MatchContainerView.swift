@@ -193,6 +193,10 @@ struct MatchView: View {
                     ConnectFourView(state: state)
                 case .colorMatch(let table):
                     ColorMatchView(table: table)
+                case .checkers(let state):
+                    CheckersView(state: state)
+                case .chess(let state):
+                    ChessView(state: state)
                 case nil:
                     ProgressView("Waiting for the host…")
                         .padding(.top, 80)

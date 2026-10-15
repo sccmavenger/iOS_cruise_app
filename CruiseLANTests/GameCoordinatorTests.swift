@@ -355,6 +355,45 @@ struct GameCoordinatorTests {
         guard case .win(.red, _) = hostState.outcome else { Issue.record("expected red win"); return }
     }
 
+    @Test("Chess plays over the network to checkmate with identical boards")
+    func chessOverNetwork() throws {
+        host.games.hostLobby(.chess)
+        let offer = try #require(guest.games.offers(for: .chess).first)
+        guest.games.join(offer)
+        guest.games.setReady(true)
+        host.games.startGame()
+        // Fool's mate: f3, e5, g4, Qh4#.
+        for (from, to) in [(13, 21), (52, 36), (14, 30), (59, 31)] {
+            guard case .chess(let state) = host.games.snapshot else { Issue.record("no state"); return }
+            let mover = state.playerId(for: state.turn) == host.id ? host : guest
+            mover.games.play(.chess(.move(from: from, to: to, promotion: nil)))
+        }
+        guard case .chess(let hostState) = host.games.snapshot, case .chess(let guestState) = guest.games.snapshot else {
+            Issue.record("missing snapshots"); return
+        }
+        #expect(hostState == guestState)
+        #expect(hostState.outcome == .checkmate(winner: .black))
+    }
+
+    @Test("Checkers resign is accepted even against a stale board")
+    func checkersResignOverNetwork() throws {
+        host.games.hostLobby(.checkers)
+        let offer = try #require(guest.games.offers(for: .checkers).first)
+        guest.games.join(offer)
+        guest.games.setReady(true)
+        host.games.startGame()
+        guard case .checkers(let state) = host.games.snapshot else { Issue.record("no state"); return }
+        let resigner = state.playerId(for: .red) == host.id ? host : guest
+        resigner.games.play(.checkers(.resign))
+        guard case .checkers(let hostState) = host.games.snapshot, case .checkers(let guestState) = guest.games.snapshot else {
+            Issue.record("missing snapshots"); return
+        }
+        #expect(hostState == guestState)
+        #expect(hostState.outcome == .win(.black, byResignation: true))
+        #expect(GameEngine.isTurnIndependent(.checkers(.resign)))
+        #expect(!GameEngine.isTurnIndependent(.checkers(.move(from: 0, to: 9))))
+    }
+
     @Test("Color Match with 3 players: each device gets only its own hand")
     func colorMatchPrivateHands() throws {
         let third = network.addNode("Tess")

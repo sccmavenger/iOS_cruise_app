@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The single Games tab listing all three titles, open games nearby, and the active match.
+/// The single Games tab listing every title, open games nearby, and the active match.
 struct GamesHomeView: View {
     @Environment(GameCoordinator.self) private var games
     @Environment(SessionManager.self) private var session
@@ -193,6 +193,8 @@ extension GameType {
         case .ticTacToe: "Three in a row wins."
         case .connectFour: "Drop discs, connect four."
         case .colorMatch: "Match colors and numbers, empty your hand."
+        case .checkers: "Jump your way across the board."
+        case .chess: "Checkmate the king to win."
         }
     }
 
@@ -214,6 +216,8 @@ struct GameArtwork: View {
             case .ticTacToe: ticTacToe
             case .connectFour: connectFour
             case .colorMatch: colorMatch
+            case .checkers: checkers
+            case .chess: chess
             }
         }
         .accessibilityHidden(true)
@@ -224,6 +228,8 @@ struct GameArtwork: View {
         case .ticTacToe: LinearGradient(colors: [Theme.teal, Theme.deep], startPoint: .top, endPoint: .bottom)
         case .connectFour: LinearGradient(colors: [Theme.deep, Theme.night], startPoint: .top, endPoint: .bottom)
         case .colorMatch: LinearGradient(colors: [Theme.sunset, Theme.coral], startPoint: .top, endPoint: .bottom)
+        case .checkers: LinearGradient(colors: [Theme.coral, Theme.night], startPoint: .top, endPoint: .bottom)
+        case .chess: LinearGradient(colors: [Theme.foam, Theme.teal], startPoint: .top, endPoint: .bottom)
         }
     }
 
@@ -277,6 +283,38 @@ struct GameArtwork: View {
             card(color: Theme.deep, label: "7").rotationEffect(.degrees(-16)).offset(x: -12)
             card(color: Theme.teal, label: "⟲").rotationEffect(.degrees(2))
             card(color: .white, label: "★", foreground: Theme.coral).rotationEffect(.degrees(18)).offset(x: 12)
+        }
+    }
+
+    private var checkers: some View {
+        VStack(spacing: 0) {
+            ForEach(0..<4, id: \.self) { row in
+                HStack(spacing: 0) {
+                    ForEach(0..<4, id: \.self) { column in
+                        let dark = (row + column) % 2 == 1
+                        Rectangle()
+                            .fill(dark ? Theme.night.opacity(0.6) : Color.white.opacity(0.25))
+                            .frame(width: 13, height: 13)
+                            .overlay {
+                                if dark, row == 0 || row == 3 {
+                                    Circle()
+                                        .fill(row < 2 ? Theme.coral : Theme.foam)
+                                        .padding(1.5)
+                                }
+                            }
+                    }
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+
+    private var chess: some View {
+        HStack(alignment: .bottom, spacing: -6) {
+            ChessGlyph(piece: ChessPiece(.white, .knight))
+                .frame(width: 34, height: 34)
+            ChessGlyph(piece: ChessPiece(.black, .king))
+                .frame(width: 44, height: 44)
         }
     }
 
