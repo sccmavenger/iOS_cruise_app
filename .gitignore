@@ -5,3 +5,5 @@ DerivedData/
 xcuserdata/
 *.xcuserstate
 .DS_Store
+Tools/asc/config.json
+*.p8

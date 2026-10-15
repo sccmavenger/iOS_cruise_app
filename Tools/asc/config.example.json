@@ -1,0 +1,8 @@
+{
+  "key_id": "ABC123DEFG",
+  "issuer_id": "00000000-0000-0000-0000-000000000000",
+  "key_path": "~/.appstoreconnect/private_keys/AuthKey_ABC123DEFG.p8",
+  "support_url": "",
+  "privacy_policy_url": "",
+  "review_contact": {"first_name": "Danny", "last_name": "Guillory", "phone": "", "email": ""}
+}
