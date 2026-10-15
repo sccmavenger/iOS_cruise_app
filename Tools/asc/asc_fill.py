@@ -71,7 +71,7 @@ AGE_FREQUENCY_FIELDS = {
 }
 AGE_BOOLEAN_FIELDS = {
     "advertising", "ageAssurance", "gambling", "healthOrWellnessTopics", "lootBox", "messagingAndChat",
-    "parentalControls", "socialMedia", "socialMediaAgeRestricted", "unrestrictedWebAccess", "userGeneratedContent",
+    "parentalControls", "socialMedia", "unrestrictedWebAccess", "userGeneratedContent",
 }
 AGE_SKIP = {"kidsAgeBand", "ageRatingOverride", "ageRatingOverrideV2", "koreaAgeRatingOverride",
             "developerAgeRatingInfoUrl"}
@@ -87,8 +87,12 @@ def section(text: str, heading: str) -> str:
 
 class Client:
     def __init__(self, config: dict):
+        read = lambda name: pathlib.Path(config[name]).expanduser().read_text().strip()
         key = pathlib.Path(config["key_path"]).expanduser().read_text()
-        self.key, self.key_id, self.issuer = key, config["key_id"], config["issuer_id"]
+        # Ids can be given inline or as paths to files holding them (keeps secrets out of the repo).
+        key_id = config.get("key_id") or read("key_id_file")
+        issuer = config.get("issuer_id") or read("issuer_id_file")
+        self.key, self.key_id, self.issuer = key, key_id, issuer
         self._token, self._expires = None, 0
 
     def token(self) -> str:
@@ -227,7 +231,16 @@ def main():
     print("Description, keywords, promotional text" + (", support URL" if "supportUrl" in loc_attrs else "") + " set")
 
     # 5. App Review details
-    contact = config.get("review_contact", {})
+    contact = dict(config.get("review_contact", {}))
+    # Optionally reuse the private App Review contact from another app on the same account.
+    if config.get("review_contact_from_app"):
+        for other in api.get(f"/v1/apps/{config['review_contact_from_app']}/appStoreVersions?limit=5")["data"]:
+            found = api.get(f"/v1/appStoreVersions/{other['id']}/appStoreReviewDetail", ok_missing=True)
+            if found and found.get("data") and found["data"]["attributes"].get("contactPhone"):
+                attrs = found["data"]["attributes"]
+                contact = {"first_name": attrs["contactFirstName"], "last_name": attrs["contactLastName"],
+                           "phone": attrs["contactPhone"], "email": attrs["contactEmail"]}
+                break
     review_attrs = {"notes": review_notes, "demoAccountRequired": False}
     for field, key in [("contactFirstName", "first_name"), ("contactLastName", "last_name"),
                        ("contactPhone", "phone"), ("contactEmail", "email")]:
