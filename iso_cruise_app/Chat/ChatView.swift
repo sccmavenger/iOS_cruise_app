@@ -19,7 +19,7 @@ struct ChatView: View {
                         NavigationLink(value: conversation.id) {
                             ConversationRow(conversation: conversation)
                         }
-                        .swipeActions {
+                        .swipeActions(allowsFullSwipe: false) {
                             if conversation.kind != .everyone {
                                 Button("Delete", systemImage: "trash", role: .destructive) {
                                     session.chat.delete(conversation.id)
@@ -48,13 +48,11 @@ struct ChatView: View {
             .sheet(isPresented: $showPeers) { PeersView() }
             .sheet(isPresented: $showProfile) { ProfileView() }
             .sheet(isPresented: $showNewChat) { NewChatView() }
-            .onChange(of: games.lobby?.id) { _, id in
-                // A game invitation was accepted; make room for the game screen.
-                if id != nil {
-                    showPeers = false
-                    showProfile = false
-                    showNewChat = false
-                }
+            .onChange(of: app.sheetDismissals) {
+                // The game screen is about to appear; sheets would block it.
+                showPeers = false
+                showProfile = false
+                showNewChat = false
             }
         }
     }
@@ -130,6 +128,7 @@ struct ConversationRow: View {
 struct ConversationView: View {
     let conversationId: UUID
     @Environment(SessionManager.self) private var session
+    @Environment(AppState.self) private var app
     @State private var draft = ""
     @State private var sendFailed = false
     @State private var filterNotice: String?
@@ -176,7 +175,8 @@ struct ConversationView: View {
 
             // People who stepped away still get messages: held until they're back, with a nudge now.
             ComposerBar(draft: $draft, canSend: session.canChat(in: conversationId),
-                        onlyAway: !session.hasConnectedMembers(in: conversationId), isFocused: $composerFocused) {
+                        onlyAway: !session.hasConnectedMembers(in: conversationId),
+                        unavailableText: unavailableText, isFocused: $composerFocused) {
                 switch session.sendChat(draft, in: conversationId) {
                 case .sent:
                     draft = ""
@@ -184,6 +184,7 @@ struct ConversationView: View {
                 case .filtered(let reason):
                     // Keep the draft so they can fix it; explain kindly.
                     withAnimation { filterNotice = reason.message }
+                    AccessibilityNotification.Announcement(reason.message).post()
                 case .noRecipients:
                     sendFailed = true
                 case .empty:
@@ -210,11 +211,18 @@ struct ConversationView: View {
         .sheet(item: $reportTarget) { target in
             ReportView(target: target)
         }
+        .onChange(of: app.sheetDismissals) { reportTarget = nil }
         .alert("Message not sent", isPresented: $sendFailed) {
             Button("OK", role: .cancel) {}
         } message: {
             Text("No one in this chat is connected or nearby right now.")
         }
+    }
+
+    /// Placeholder when nobody in this chat can be reached.
+    private var unavailableText: String {
+        guard let conversation, conversation.kind == .direct else { return "Connect to someone to chat" }
+        return "\(session.chat.title(of: conversation, localId: session.localId)) isn't nearby right now"
     }
 
     private var emptyTitle: String {
@@ -250,6 +258,14 @@ struct NewChatView: View {
 
     private var people: [PeerIdentity] { session.reachableIdentities }
     private var chosen: [PeerIdentity] { people.filter { selected.contains($0.id) } }
+    private var isFull: Bool { chosen.count >= ConversationRef.maxMembers - 1 }
+
+    /// Explains why a typed group name won't be used.
+    private var nameProblem: String? {
+        let trimmed = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, case .blocked(let reason) = session.filter.check(trimmed) else { return nil }
+        return reason.message
+    }
 
     var body: some View {
         NavigationStack {
@@ -259,7 +275,7 @@ struct NewChatView: View {
                         Button {
                             if selected.contains(person.id) {
                                 selected.remove(person.id)
-                            } else if selected.count < ConversationRef.maxMembers - 1 {
+                            } else if !isFull {
                                 selected.insert(person.id)
                             }
                         } label: {
@@ -275,16 +291,17 @@ struct NewChatView: View {
                                 }
                             }
                         }
+                        .disabled(isFull && !selected.contains(person.id))
                         .accessibilityAddTraits(selected.contains(person.id) ? .isSelected : [])
                     }
                 } header: {
-                    Text("People nearby")
+                    Text(chosen.isEmpty ? "People nearby" : "People nearby · \(chosen.count) of \(ConversationRef.maxMembers - 1) picked")
                 } footer: {
                     Text("Pick one person for a private chat, or up to \(ConversationRef.maxMembers - 1) for a group. Only the people you pick see the messages.")
                 }
 
-                if selected.count >= 2 {
-                    Section("Group name (optional)") {
+                if chosen.count >= 2 {
+                    Section {
                         TextField("e.g. Pool Crew", text: $groupName)
                             .textInputAutocapitalization(.words)
                             .onChange(of: groupName) { _, value in
@@ -292,6 +309,13 @@ struct NewChatView: View {
                                     groupName = String(value.prefix(ConversationRef.maxNameLength))
                                 }
                             }
+                    } header: {
+                        Text("Group name (optional)")
+                    } footer: {
+                        if let nameProblem {
+                            Text("\(nameProblem) The group will be named after its members instead.")
+                                .foregroundStyle(.red)
+                        }
                     }
                 }
             }
@@ -302,14 +326,19 @@ struct NewChatView: View {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(selected.count >= 2 ? "Create Group" : "Start") { start() }
-                        .disabled(selected.isEmpty)
+                    Button(chosen.count >= 2 ? "Create Group" : "Start") { start() }
+                        .disabled(chosen.isEmpty)
                 }
+            }
+            // Someone who drops out of reach while picked shouldn't still count.
+            .onChange(of: people.map(\.id)) { _, ids in
+                selected.formIntersection(ids)
             }
         }
     }
 
     private func start() {
+        guard !chosen.isEmpty else { return }
         let conversation = chosen.count == 1
             ? session.directConversation(with: chosen[0])
             : session.createGroup(name: groupName, with: chosen)
@@ -473,6 +502,7 @@ struct ComposerBar: View {
     let canSend: Bool
     /// Everyone is away: the message is held for them and they get a nudge.
     var onlyAway = false
+    var unavailableText = "Connect to someone to chat"
     var isFocused: FocusState<Bool>.Binding
     let onSend: () -> Void
 
@@ -480,7 +510,7 @@ struct ComposerBar: View {
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 10) {
-            TextField(canSend ? (onlyAway ? "Message (sent when they're back)" : "Message") : "Connect to someone to chat", text: $draft, axis: .vertical)
+            TextField(canSend ? (onlyAway ? "Message (sent when they're back)" : "Message") : unavailableText, text: $draft, axis: .vertical)
                 .lineLimit(1...5)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)

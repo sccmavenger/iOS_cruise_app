@@ -9,6 +9,9 @@ final class SafetyStore {
         let fingerprint: String
         let name: String
         let date: Date
+        /// Their CruiseLAN id at the time, so a block also holds if their device fingerprint
+        /// changes (for example, after a nickname change). Missing in older saved data.
+        var identityId: String? = nil
 
         var id: String { fingerprint }
     }
@@ -31,9 +34,13 @@ final class SafetyStore {
         return blocked.contains { $0.fingerprint == fingerprint }
     }
 
-    func block(fingerprint: String, name: String) {
-        guard !isBlocked(fingerprint) else { return }
-        blocked.append(BlockedPerson(fingerprint: fingerprint, name: name, date: .now))
+    func isBlocked(identityId: String) -> Bool {
+        blocked.contains { $0.identityId == identityId }
+    }
+
+    func block(fingerprint: String, name: String, identityId: String? = nil) {
+        guard !isBlocked(fingerprint) || (identityId.map { !isBlocked(identityId: $0) } ?? false) else { return }
+        blocked.append(BlockedPerson(fingerprint: fingerprint, name: name, date: .now, identityId: identityId))
         save()
     }
 

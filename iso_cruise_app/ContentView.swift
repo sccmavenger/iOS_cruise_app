@@ -82,9 +82,13 @@ struct MainTabView: View {
                 presentMatchSoon()
             }
         }
-        .onChange(of: showMatch) { _, showing in
-            // If the system dropped the cover while a match is still active, bring it back.
-            if !showing, games.lobby != nil, !app.isMatchMinimized { presentMatchSoon() }
+        .onChange(of: app.isMatchVisible) { _, visible in
+            // If the cover went away while a match is still active and not minimized (for
+            // example the system dismissed it), bring it back.
+            if !visible, games.lobby != nil, !app.isMatchMinimized {
+                showMatch = false
+                presentMatchSoon()
+            }
         }
         // The conversation on screen (if any) isn't counted unread and gets no banners.
         .onChange(of: visibleConversation, initial: true) { _, id in
@@ -94,10 +98,11 @@ struct MainTabView: View {
         .onChange(of: session.chat.totalUnread, initial: true) { _, count in
             notifications.setBadge(count)
         }
-        .onChange(of: showMatch, initial: true) { _, showing in
-            notifications.isMatchOnScreen = showing
+        .onChange(of: app.isMatchVisible, initial: true) { _, visible in
+            notifications.isMatchOnScreen = visible
         }
-        .onChange(of: notifications.pendingRoute) { _, route in
+        // `initial`: a notification tapped while the app was closed sets the route before this view exists.
+        .onChange(of: notifications.pendingRoute, initial: true) { _, route in
             guard let route else { return }
             notifications.pendingRoute = nil
             open(route)
@@ -118,7 +123,7 @@ struct MainTabView: View {
     }
 
     private var visibleConversation: UUID? {
-        guard notifications.isAppActive, app.selectedTab == .chat, !showMatch else { return nil }
+        guard notifications.isAppActive, app.selectedTab == .chat, !app.isMatchVisible else { return nil }
         return app.openConversation
     }
 
@@ -128,17 +133,31 @@ struct MainTabView: View {
         case .chat(let id):
             if session.chat.conversation(id) != nil { app.open(conversation: id) } else { app.selectedTab = .chat }
             if games.lobby != nil { app.isMatchMinimized = true }
+        case .chats:
+            app.selectedTab = .chat
+            app.chatPath = []
+            if games.lobby != nil { app.isMatchMinimized = true }
         case .games:
             app.selectedTab = .games
+            if games.lobby != nil { app.isMatchMinimized = true }
         case .game:
             if games.lobby != nil { app.isMatchMinimized = false }
         }
     }
 
-    private func presentMatchSoon() {
+    /// Closes any open sheet, then shows the match. If UIKit drops the presentation (it does
+    /// when another one is still closing), it's noticed and retried a few times.
+    private func presentMatchSoon(attempt: Int = 0) {
+        app.sheetDismissals += 1
         Task {
             try? await Task.sleep(for: .milliseconds(450))
-            if games.lobby != nil, !app.isMatchMinimized { showMatch = true }
+            guard games.lobby != nil, !app.isMatchMinimized else { return }
+            showMatch = true
+            try? await Task.sleep(for: .milliseconds(1_200))
+            if games.lobby != nil, !app.isMatchMinimized, !app.isMatchVisible, attempt < 4 {
+                showMatch = false
+                presentMatchSoon(attempt: attempt + 1)
+            }
         }
     }
 

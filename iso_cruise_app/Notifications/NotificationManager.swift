@@ -14,6 +14,10 @@ final class AppState {
     var isMatchMinimized = false
     /// Navigation inside the Chat tab: the open conversation, if any.
     var chatPath: [UUID] = []
+    /// The match screen is actually showing (set by the screen itself, not by the request to show it).
+    var isMatchVisible = false
+    /// Bumped to ask every open sheet to close, so the match screen can be presented.
+    var sheetDismissals = 0
 
     var openConversation: UUID? { chatPath.last }
 
@@ -33,6 +37,8 @@ final class AppState {
 final class NotificationManager: NSObject {
     enum Route: Equatable {
         case chat(UUID)
+        /// The chat list (for a conversation this phone doesn't know yet).
+        case chats
         case games
         case game
     }
@@ -68,9 +74,9 @@ final class NotificationManager: NSObject {
 
     /// A friend's phone sent a message preview over Bluetooth while we were away. The full
     /// message arrives when they reconnect.
-    func chatNudgeReceived(title: String, preview: String?, conversationId: UUID) {
+    func chatNudgeReceived(title: String, preview: String?, conversationId: UUID?) {
         post(title: title, body: preview ?? "Sent you a message. Open CruiseLAN to read it.",
-             thread: conversationId.uuidString, route: .chat(conversationId))
+             thread: conversationId?.uuidString ?? "chats", route: conversationId.map { .chat($0) } ?? .chats)
     }
 
     /// A friend's phone says it's our turn.
@@ -92,7 +98,8 @@ final class NotificationManager: NSObject {
     /// Clears delivered notifications for a conversation once it's read.
     func clearDelivered(for conversationId: UUID) {
         let thread = conversationId.uuidString
-        center.getDeliveredNotifications { [center] delivered in
+        Task {
+            let delivered = await center.deliveredNotifications()
             let ids = delivered.filter { $0.request.content.threadIdentifier == thread }.map(\.request.identifier)
             center.removeDeliveredNotifications(withIdentifiers: ids)
         }
@@ -108,6 +115,7 @@ final class NotificationManager: NSObject {
         content.threadIdentifier = thread
         switch route {
         case .chat(let conversationId): content.userInfo = ["route": "chat", "conversation": conversationId.uuidString]
+        case .chats: content.userInfo = ["route": "chats"]
         case .games: content.userInfo = ["route": "games"]
         case .game: content.userInfo = ["route": "game"]
         }
@@ -129,6 +137,7 @@ extension NotificationManager: UNUserNotificationCenterDelegate {
         await MainActor.run {
             switch route {
             case "chat": self.pendingRoute = .chat(conversation ?? ChatStore.everyoneId)
+            case "chats": self.pendingRoute = .chats
             case "games": self.pendingRoute = .games
             case "game": self.pendingRoute = .game
             default: break

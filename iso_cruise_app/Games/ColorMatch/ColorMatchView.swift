@@ -49,7 +49,9 @@ struct ColorMatchView: View {
                 play(card, color: color)
                 wildCard = nil
             }
-            .presentationDetents([.height(330)])
+            // Sized to content and scrollable, so larger text sizes still fit. Swipe down to cancel.
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
         }
         .alert(drawFourTitle, isPresented: Binding(get: { mustRespondToDrawFour && !isBusy }, set: { _ in })) {
             Button("Draw 4") { games.play(.colorMatch(.respondToDrawFour(challenge: false))) }
@@ -241,11 +243,20 @@ struct ColorMatchView: View {
         }
     }
 
+    /// The host's event line with names filled in on this phone. The host could send anything,
+    /// so it's filtered like chat before it's shown.
     private var eventText: String {
         var text = table.lastEvent
         for player in table.players {
-            text = text.replacingOccurrences(of: ColorMatchRules.nameToken(player), with: games.name(for: player))
+            let token = ColorMatchRules.nameToken(player)
+            let name = games.name(for: player)
+            // "You" at the start of the line, "you" in the middle.
+            if text.hasPrefix(token) {
+                text = name + text.dropFirst(token.count)
+            }
+            text = text.replacingOccurrences(of: token, with: name == "You" ? "you" : name)
         }
+        guard !text.contains("{"), ContentFilter.shared.check(text).isAllowed else { return "" }
         return text
     }
 
@@ -316,10 +327,10 @@ struct OpponentChip: View {
             }
             if canCatch {
                 Button("Catch!", action: onCatch)
-                    .font(.caption.weight(.bold))
+                    .font(.subheadline.weight(.bold))
+                    .frame(minHeight: 44)
                     .buttonStyle(.glassProminent)
                     .tint(Theme.coral)
-                    .accessibilityHint("\(name) didn't call One. Catch them to make them draw 2.")
             }
             Text("\(score) pts")
                 .font(.caption2)
@@ -328,8 +339,13 @@ struct OpponentChip: View {
         .padding(8)
         .frame(maxWidth: .infinity)
         .glassEffect(isTurn ? .regular.tint(Theme.teal.opacity(0.35)) : .regular, in: .rect(cornerRadius: 16))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(name), \(count) cards, \(score) points\(isTurn ? ", their turn" : "")")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(name), \(count == 1 ? "1 card" : "\(count) cards"), \(score) points\(isTurn ? ", their turn" : "")\(canCatch ? ". Didn't call One, you can catch them" : "")")
+        .accessibilityActions {
+            if canCatch {
+                Button("Catch \(name)", action: onCatch)
+            }
+        }
     }
 }
 

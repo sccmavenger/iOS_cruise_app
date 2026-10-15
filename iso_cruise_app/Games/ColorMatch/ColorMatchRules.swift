@@ -142,7 +142,8 @@ nonisolated enum ColorMatchRules {
         switch action {
         case .catchOne(let target):
             // Anyone except the offender may catch before the deadline.
-            guard target != player, next.vulnerablePlayer == target else { throw .notAllowed }
+            // Only while they still hold exactly one card (they may have drawn since).
+            guard target != player, next.vulnerablePlayer == target, next.hands[target]?.count == 1 else { throw .notAllowed }
             next.vulnerablePlayer = nil
             draw(2, for: target, in: &next, using: &rng)
             next.lastEvent = "\(nameToken(player)) caught \(nameToken(target)): +2 cards"

@@ -35,6 +35,8 @@ struct ContentFilterTests {
         "I'm on deck 7",
         "The pilot showed us the cockpit",
         "What time is dinner? 6:30?",
+        "See you on 10/15/2026 at 6:30",
+        "Scores: 12, 9, 7 and 4",
     ])
     func allowed(text: String) {
         #expect(filter.check(text) == .allowed, "\(text)")
@@ -93,6 +95,9 @@ struct ContentFilterTests {
         "add me on snapchat",
         "my insta is cool_kid",
         "I'm in cabin 8241",
+        "cabin 8 2 1 4",
+        "call 555/123/4567",
+        "555_123*4567",
         "stateroom #10512",
         "follow @cool_kid99",
         "discord?",

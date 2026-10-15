@@ -53,6 +53,8 @@ nonisolated struct Envelope: Equatable, Sendable {
         case heartbeat
         /// "I'm stepping away" (app going to the background) so peers show "away", not "disconnected".
         case presence
+        /// Proves a returning identity holds the key it was given last time (see `ProofPayload`).
+        case proof
     }
 
     enum Payload: Equatable, Sendable {
@@ -72,6 +74,7 @@ nonisolated struct Envelope: Equatable, Sendable {
         case error(ErrorPayload)
         case heartbeat(EmptyPayload)
         case presence(PresencePayload)
+        case proof(ProofPayload)
 
         var kind: Kind {
             switch self {
@@ -91,6 +94,7 @@ nonisolated struct Envelope: Equatable, Sendable {
             case .error: .error
             case .heartbeat: .heartbeat
             case .presence: .presence
+            case .proof: .proof
             }
         }
     }
@@ -110,6 +114,22 @@ nonisolated struct HelloPayload: Codable, Equatable, Sendable {
     /// background, so only the two of them can make or read those nudges. It travels
     /// only over the encrypted peer-to-peer link. Optional for older builds.
     var nudgeKey: String? = nil
+    /// Fresh random value (base64, 16 bytes). A peer that already knows this sender's
+    /// identity answers with a `proof` over it, so an id can't be taken over by someone else.
+    var nonce: String? = nil
+}
+
+/// Sent right after receiving the hello of someone this phone has met before: an HMAC,
+/// with the key that person handed us last time, over both ids and their hello nonce.
+/// Only the real holder of that id could have received the key, so the other phone
+/// binds the id only after checking this.
+nonisolated struct ProofPayload: Codable, Equatable, Sendable {
+    /// base64 HMAC-SHA256.
+    var mac: String
+
+    static func message(prover: String, verifier: String, nonce: String) -> Data {
+        Data("cruiselan.proof.v1|\(prover)|\(verifier)|\(nonce)".utf8)
+    }
 }
 
 nonisolated struct PresencePayload: Codable, Equatable, Sendable {
@@ -236,6 +256,8 @@ nonisolated struct JoinRejectPayload: Codable, Equatable, Sendable {
         case declined
         case notFound
         case alreadyStarted
+        /// The invited person is already in another game.
+        case busy
     }
 
     var lobbyId: UUID

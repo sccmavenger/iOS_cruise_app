@@ -47,6 +47,10 @@ struct CheckersView: View {
         }
         .animation(.spring(duration: 0.3, bounce: 0.2), value: state)
         .onChange(of: state) { selected = nil }
+        .onChange(of: statusText) { _, text in
+            // VoiceOver users hear whose turn it is and the result without hunting for it.
+            AccessibilityNotification.Announcement(text).post()
+        }
     }
 
     private func badge(_ side: CheckersState.Side) -> some View {
@@ -68,9 +72,9 @@ struct CheckersView: View {
             let winner = games.name(for: state.playerId(for: side))
             return byResignation ? "\(loser) resigned. \(winner) wins" : "\(winner) wins"
         case .draw:
-            return "It's a draw: 40 moves with no jumps"
+            return "It's a draw: 40 moves each with only kings moving and no jumps"
         case nil:
-            if games.pendingMoveId != nil { return "Sending move…" }
+            if games.pendingMoveId != nil { return games.pendingMoveStatus }
             guard isMyTurn else { return "\(games.name(for: state.playerId(for: state.turn)))'s turn" }
             if state.jumpingFrom != nil { return "Keep jumping!" }
             if mustJump { return "You must jump!" }
@@ -141,9 +145,11 @@ struct CheckerPieceView: View {
     var body: some View {
         ZStack {
             Circle()
-                .fill(piece.side == .black ? AnyShapeStyle(Theme.night.gradient) : AnyShapeStyle(Theme.coral.gradient))
+                .fill(piece.side == .black ? AnyShapeStyle(Color(white: 0.12).gradient) : AnyShapeStyle(Theme.coral.gradient))
+            // A bright rim keeps Black pieces visible on the dark squares (color-blind friendly too:
+            // solid for Black, dashed for Red).
             Circle()
-                .strokeBorder(piece.side == .black ? Color.white.opacity(0.35) : Color.white.opacity(0.6), style: StrokeStyle(lineWidth: 2, dash: piece.side == .black ? [] : [3, 2]))
+                .strokeBorder(piece.side == .black ? Color.white.opacity(0.85) : Color.white.opacity(0.7), style: StrokeStyle(lineWidth: 2.5, dash: piece.side == .black ? [] : [3, 2]))
                 .padding(3)
             if piece.isKing {
                 Image(systemName: "crown.fill")

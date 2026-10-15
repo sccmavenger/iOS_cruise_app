@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import iso_cruise_app
@@ -28,6 +29,7 @@ struct EnvelopeCodecTests {
             .error(ErrorPayload(code: "x", message: "y")),
             .heartbeat(EmptyPayload()),
             .presence(PresencePayload(away: true)),
+            .proof(ProofPayload(mac: Data(repeating: 1, count: 32).base64EncodedString())),
         ]
         #expect(Set(payloads.map(\.kind)) == Set(Envelope.Kind.allCases))
 
@@ -230,7 +232,7 @@ final class FakeTransport: PeerTransport {
 
     func start(displayName: String) { startedName = displayName }
     func stop() {}
-    func invite(_ peer: PeerKey) { invited.append(peer) }
+    func invite(_ peer: PeerKey) -> Bool { invited.append(peer); return true }
     func respond(toInvitation invitationId: UUID, accept: Bool) { responses.append((invitationId, accept)) }
     func send(_ data: Data, to peers: [PeerKey]) throws { sent.append((data, peers)) }
     func disconnectAll() {}
@@ -462,11 +464,15 @@ struct SessionManagerTests {
 
     @Test("A peer this user accepted reconnects automatically after dropping")
     func trustedReconnect() {
-        connectAndHello()
-        session.handle(.peerStateChanged(peerKey, .notConnected))
-        // "Local" sorts before "Remote", so this side invites; the other side would wait.
+        // The user invites them (that's the approval that makes them trusted).
         session.handle(.peerFound(peerKey, displayName: "Remote"))
-        #expect(transport.invited == [peerKey])
+        session.invite(peerKey)
+        connectAndHello()
+        let invitesBefore = transport.invited.count
+        session.handle(.peerStateChanged(peerKey, .notConnected))
+        // "Local" sorts before "Remote", so this side re-invites right away; the other side would wait.
+        #expect(transport.invited.count == invitesBefore + 1)
+        #expect(transport.invited.last == peerKey)
 
         // Their invitation is accepted without asking again.
         let invitationId = UUID()
@@ -474,6 +480,74 @@ struct SessionManagerTests {
         #expect(session.invitations.isEmpty)
         #expect(transport.responses.last?.0 == invitationId)
         #expect(transport.responses.last?.1 == true)
+    }
+
+    /// The proof the real remote phone would send: an HMAC, with the key we gave it in our
+    /// first hello, over the nonce in our latest hello.
+    private func proofFromRemote() throws -> Envelope.Payload {
+        let hellos = transport.sentEnvelopes().compactMap { envelope -> HelloPayload? in
+            if case .hello(let hello) = envelope.payload { return hello }
+            return nil
+        }
+        let firstKey = try #require(hellos.first?.nudgeKey.flatMap { Data(base64Encoded: $0) })
+        let nonce = try #require(hellos.last?.nonce)
+        let mac = HMAC<SHA256>.authenticationCode(for: ProofPayload.message(prover: remoteId, verifier: session.localId, nonce: nonce),
+                                                  using: SymmetricKey(data: firstKey))
+        return .proof(ProofPayload(mac: Data(mac).base64EncodedString()))
+    }
+
+    @Test("Someone claiming a known person's id can't take over without their key")
+    func identityTakeover() throws {
+        connectAndHello()
+        session.handle(.peerStateChanged(peerKey, .notConnected))
+        #expect(session.sendChat("private, for Remote only") == .sent)
+
+        // An impostor on another connection claims Remote's id.
+        let impostor = PeerKey()
+        session.handle(.peerFound(impostor, displayName: "Remote"))
+        session.handle(.peerStateChanged(impostor, .connected))
+        session.handle(.received(encode(.hello(HelloPayload(nickname: "Remote", protocolVersion: 1)), sequence: 10), from: impostor))
+        let fakeProof = Data(repeating: 9, count: 32).base64EncodedString()
+        session.handle(.received(encode(.proof(ProofPayload(mac: fakeProof)), sequence: 11), from: impostor))
+
+        #expect(session.connectedIdentities.isEmpty)
+        let leaked = transport.sent.filter { $0.1 == [impostor] }.compactMap { try? EnvelopeCodec.decode($0.0) }
+            .contains { $0.payload == .chat(ChatPayload(text: "private, for Remote only")) }
+        #expect(!leaked)
+    }
+
+    @Test("A huge sequence from one connection doesn't lock out the real peer")
+    func sequencePoisoning() {
+        let attacker = PeerKey()
+        session.handle(.peerStateChanged(attacker, .connected))
+        session.handle(.received(encode(.hello(HelloPayload(nickname: "Mallory", protocolVersion: 1)), sender: remoteId, sequence: 9_999_999_999_999), from: attacker))
+        session.handle(.peerStateChanged(attacker, .notConnected))
+        connectAndHello()
+        #expect(session.connectedIdentities.map(\.id) == [remoteId])
+    }
+
+    @Test("Blocking someone who is away still blocks them")
+    func blockWhileAway() {
+        connectAndHello()
+        session.handle(.received(encode(.chat(ChatPayload(text: "mean words")), sequence: 2), from: peerKey))
+        session.handle(.peerStateChanged(peerKey, .notConnected))
+        session.block(identityId: remoteId)
+        #expect(!session.chat.messages.contains { $0.text == "mean words" })
+        #expect(safety.isBlocked(identityId: remoteId))
+        #expect(session.awayIdentityIds.isEmpty)
+
+        // They come back on a new connection: ignored.
+        let again = PeerKey()
+        session.handle(.peerStateChanged(again, .connected))
+        session.handle(.received(encode(.hello(HelloPayload(nickname: "Remote", protocolVersion: 1)), sequence: 20), from: again))
+        #expect(session.connectedIdentities.isEmpty)
+    }
+
+    @Test("People brought in by someone else aren't trusted for automatic reconnection")
+    func meshPeersNotTrusted() {
+        // Connected without this user inviting or accepting them.
+        connectAndHello()
+        #expect(!session.trusted.isTrusted(transport.fingerprint(for: peerKey)))
     }
 
     @Test("Strangers still need approval, and Disconnect from Everyone stops auto-reconnect")
@@ -502,15 +576,16 @@ struct SessionManagerTests {
         #expect(queuedFor == [remoteId])
         #expect(session.chat.messages.last?.text == "see you at dinner")
 
-        // They come back: new connection, new hello.
+        // They come back: new connection, new hello, and proof they're the same phone.
         session.handle(.peerStateChanged(peerKey, .connected))
         session.handle(.received(encode(.hello(HelloPayload(nickname: "Remote", protocolVersion: 1)), sequence: 2), from: peerKey))
+        session.handle(.received(encode(try proofFromRemote(), sequence: 3), from: peerKey))
         let delivered = transport.sentEnvelopes().filter { $0.payload == .chat(ChatPayload(text: "see you at dinner")) }
         #expect(delivered.count == 1)
         #expect(session.chat.messages.contains { $0.text.contains("is back") })
     }
 
-    @Test("Going to the background drops peers quietly and reports them as connection losses")
+    @Test("Going to the background drops peers quietly and reports it as a local suspend")
     func suspendAndResume() {
         var drops: [SessionManager.DropReason] = []
         session.onPeerDisconnected = { _, reason in drops.append(reason) }
@@ -518,7 +593,7 @@ struct SessionManagerTests {
         connectAndHello()
         session.handle(.started)
         session.suspend()
-        #expect(drops == [.connectionLost])
+        #expect(drops == [.localSuspend])
         #expect(session.status == .idle)
         #expect(session.connectedPeers.isEmpty)
         #expect(session.chat.messages.last?.text.contains("disconnected") != true)

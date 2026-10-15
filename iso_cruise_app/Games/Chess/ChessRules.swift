@@ -115,6 +115,8 @@ nonisolated struct ChessState: Codable, Equatable, Sendable {
     var outcome: Outcome?
     var round: Int
     var lastMove: LastMove?
+    /// Pieces taken so far, in order. Shown beside the board; promotions don't add here.
+    var capturedPieces: [ChessPiece] = []
 
     func color(for playerId: String) -> ChessPiece.Color? {
         guard let index = players.firstIndex(of: playerId) else { return nil }
@@ -136,6 +138,7 @@ nonisolated struct ChessState: Codable, Equatable, Sendable {
             && (lastMove.map { ChessRules.squareRange.contains($0.from) && ChessRules.squareRange.contains($0.to) } ?? true)
             && positionHistory.count <= ChessRules.fiftyMoveLimit + 1
             && positionHistory.allSatisfy { $0.count <= 80 }
+            && capturedPieces.count <= 30
     }
 }
 
@@ -444,6 +447,11 @@ nonisolated enum ChessRules {
         guard let piece = state.board[move.from] else { return state }
         var next = state
         let isCapture = state.board[move.to] != nil || (piece.kind == .pawn && file(move.from) != file(move.to))
+        if let taken = state.board[move.to] {
+            next.capturedPieces.append(taken)
+        } else if isCapture {
+            next.capturedPieces.append(ChessPiece(piece.color.other, .pawn)) // en passant
+        }
         next.board = board(after: move, in: state)
 
         // Moving a king or rook, or capturing a rook at home, removes those castling rights.

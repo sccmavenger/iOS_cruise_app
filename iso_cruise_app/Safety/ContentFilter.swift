@@ -289,11 +289,21 @@ nonisolated struct ContentFilter: Sendable {
         #"(^|\s)@[a-z0-9_.]{3,}"#,
         // Cabin or room numbers on a ship or in a hotel.
         #"\b(cabin|room|stateroom|suite)\s*(number|no\.?|#)?\s*\d{3,5}\b"#,
+        // ...including digits spaced out ("cabin 8 2 1 4").
+        #"\b(cabin|room|stateroom|suite)\s*(number|no\.?|#)?\s*(\d[\s\-.,/_*]*){3,5}"#,
     ].compactMap { try? NSRegularExpression(pattern: $0) }
+
+    /// Dates like 10/15/2026 are fine to share; they're removed before the digit-run check.
+    private static let datePattern = #"\b\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4}\b"#
 
     static func containsPersonalInfo(_ text: String) -> Bool {
         let normalized = lightNormalize(text)
         let range = NSRange(normalized.startIndex..., in: normalized)
-        return personalInfoPatterns.contains { $0.firstMatch(in: normalized, range: range) != nil }
+        if personalInfoPatterns.contains(where: { $0.firstMatch(in: normalized, range: range) != nil }) { return true }
+        // A phone number split up by any separators ("555/123/4567", "555_123*4567") still
+        // has seven or more digits once the separators are gone.
+        let withoutDates = normalized.replacingOccurrences(of: datePattern, with: " ", options: .regularExpression)
+        let joined = withoutDates.replacingOccurrences(of: #"[^a-z0-9]+"#, with: "", options: .regularExpression)
+        return joined.range(of: #"\d{7,}"#, options: .regularExpression) != nil
     }
 }

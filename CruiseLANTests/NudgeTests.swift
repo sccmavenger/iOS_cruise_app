@@ -21,36 +21,45 @@ struct NudgeTests {
         #expect(uuid.uuidString.dropFirst(14).first == "4")
     }
 
-    @Test("Sealed nudges open only with the pair's key and keep their content")
+    @Test("Sealed nudges open only with the pair's key and name the right sender")
     func sealAndOpen() throws {
         let original = message(.chat(preview: "See you at the pool", conversationId: UUID()))
         let data = try #require(Nudge.seal(original, from: sender, key: key))
-        let opened = try #require(Nudge.open(data, key: { $0 == sender ? key : nil }))
+        let opened = try #require(Nudge.open(data, keys: ["someone-else": SymmetricKey(size: .bits256), sender: key]))
         #expect(opened.from == sender)
-        #expect(opened.message == original)
-        // Another key, or an unknown sender, can't open it.
-        #expect(Nudge.open(data, key: { _ in SymmetricKey(size: .bits256) }) == nil)
-        #expect(Nudge.open(data, key: { _ in nil }) == nil)
+        #expect(opened.message.id == original.id)
+        #expect(opened.message.kind == original.kind)
+        // JSON keeps the timestamp to about a microsecond.
+        #expect(abs(opened.message.sentAt.timeIntervalSince(original.sentAt)) < 0.001)
+        // Without the key, nothing opens.
+        #expect(Nudge.open(data, keys: ["x": SymmetricKey(size: .bits256)]) == nil)
+        #expect(Nudge.open(data, keys: [:]) == nil)
     }
 
-    @Test("Tampered, claimed-by-someone-else, old, or malformed bytes are dropped")
+    @Test("Nothing on the air identifies the sender")
+    func anonymousOnTheWire() throws {
+        let data = try #require(Nudge.seal(message(.turn(.chess)), from: sender, key: key))
+        #expect(data.range(of: Data(sender.utf8)) == nil)
+        #expect(data.first == UInt8(Nudge.version))
+    }
+
+    @Test("Tampered, old, or malformed bytes are dropped")
     func rejectsBadInput() throws {
+        let keys = [sender: key]
         let data = try #require(Nudge.seal(message(.turn(.chess)), from: sender, key: key))
         var tampered = data
         tampered[tampered.count - 1] ^= 0xFF
-        #expect(Nudge.open(tampered, key: { _ in key }) == nil)
-
-        // Re-labeling the sender doesn't help: the box only opens with the real sender's key.
-        let impostor = String(repeating: "x", count: sender.utf8.count)
-        var relabeled = data
-        relabeled.replaceSubrange(2..<(2 + sender.utf8.count), with: Data(impostor.utf8))
-        let otherKey = SymmetricKey(size: .bits256)
-        #expect(Nudge.open(relabeled, key: { $0 == impostor ? otherKey : nil }) == nil)
+        #expect(Nudge.open(tampered, keys: keys) == nil)
 
         let stale = try #require(Nudge.seal(message(.turn(.chess), sentAt: .now.addingTimeInterval(-Nudge.maxAge - 10)), from: sender, key: key))
-        #expect(Nudge.open(stale, key: { _ in key }) == nil)
-        #expect(Nudge.open(Data("not a nudge".utf8), key: { _ in key }) == nil)
-        #expect(Nudge.open(Data(repeating: 2, count: Nudge.maxPayloadBytes + 1), key: { _ in key }) == nil)
+        #expect(Nudge.open(stale, keys: keys) == nil)
+        let future = try #require(Nudge.seal(message(.turn(.chess), sentAt: .now.addingTimeInterval(Nudge.maxAge + 10)), from: sender, key: key))
+        #expect(Nudge.open(future, keys: keys) == nil)
+        #expect(Nudge.open(Data("not a nudge".utf8), keys: keys) == nil)
+        #expect(Nudge.open(Data(repeating: 3, count: Nudge.maxPayloadBytes + 1), keys: keys) == nil)
+        var wrongVersion = data
+        wrongVersion[0] = 2
+        #expect(Nudge.open(wrongVersion, keys: keys) == nil)
     }
 
     @Test("The largest move still fits in one Bluetooth write")

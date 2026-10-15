@@ -4,6 +4,7 @@ import SwiftUI
 struct GamesHomeView: View {
     @Environment(GameCoordinator.self) private var games
     @Environment(SessionManager.self) private var session
+    @Environment(AppState.self) private var app
     @State private var selectedGame: GameType?
 
     var body: some View {
@@ -36,13 +37,12 @@ struct GamesHomeView: View {
             .sheet(item: $selectedGame) { game in
                 GameDetailSheet(game: game)
             }
-            .onChange(of: games.lobby?.id) { _, id in
-                if id != nil { selectedGame = nil }
-            }
+            .onChange(of: app.sheetDismissals) { selectedGame = nil }
             .alert(
                 games.notice ?? "",
                 isPresented: Binding(
-                    get: { games.notice != nil && games.lobby == nil },
+                    // While a match is on screen, the match shows its own notices.
+                    get: { games.notice != nil && !app.isMatchVisible },
                     set: { if !$0 { games.notice = nil } }
                 )
             ) {
@@ -57,6 +57,7 @@ struct GameDetailSheet: View {
     let game: GameType
     @Environment(GameCoordinator.self) private var games
     @Environment(SessionManager.self) private var session
+    @Environment(AppState.self) private var app
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -76,6 +77,19 @@ struct GameDetailSheet: View {
                     }
                 }
 
+                if let current = games.lobby {
+                    Section {
+                        Button {
+                            dismiss()
+                            app.isMatchMinimized = false
+                        } label: {
+                            Label("Back to your \(current.gameType.displayName) game", systemImage: "arrow.uturn.backward.circle.fill")
+                        }
+                    } footer: {
+                        Text("You're already in a game. Finish or leave it to host or join another one.")
+                    }
+                }
+
                 Section {
                     Button {
                         games.hostLobby(game)
@@ -83,6 +97,7 @@ struct GameDetailSheet: View {
                     } label: {
                         Label("Host a New Game", systemImage: "plus.circle.fill")
                     }
+                    .disabled(games.lobby != nil || games.joiningLobbyId != nil)
                 } footer: {
                     Text("Nearby connected players will see your game and can join. You can also invite someone directly from the lobby.")
                 }
@@ -117,7 +132,7 @@ struct GameDetailSheet: View {
                                 }
                             }
                         }
-                        .disabled(offer.isFull || games.joiningLobbyId != nil)
+                        .disabled(offer.isFull || games.joiningLobbyId != nil || games.lobby != nil)
                         .accessibilityHint("Asks the host for a seat")
                     }
                 }

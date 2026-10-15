@@ -82,6 +82,16 @@ final class GameCoordinator {
     @ObservationIgnored private var seenMoveIds: Set<UUID> = []
     @ObservationIgnored private var awayTimers: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var nudgeRetry: Task<Void, Never>?
+    @ObservationIgnored private var nudgeRetryGeneration = 0
+    /// This phone's own app is in the background: people look away, but nobody is nudged
+    /// and no timeouts run until we're back.
+    @ObservationIgnored private var suspendedLocally = false
+    /// Revision of the last turn-changing move. Moves based on it stay valid even if
+    /// Call One!/Catch! (which don't change whose turn it is) were applied since.
+    @ObservationIgnored private var turnRevision = 0
+    /// Hosts whose direct invitation was just declined, muted for a while.
+    @ObservationIgnored private var declinedHosts: [String: Date] = [:]
+    static let declineMute: TimeInterval = 2 * 60
 
     init(session: SessionManager) {
         self.session = session
@@ -93,6 +103,9 @@ final class GameCoordinator {
         }
         session.onPeerIdentified = { [weak self] identity in
             self?.peerIdentified(identity)
+        }
+        session.onResumed = { [weak self] in
+            self?.sessionResumed()
         }
     }
 
@@ -130,12 +143,23 @@ final class GameCoordinator {
         guard let lobby, isHost, lobby.phase == .lobby, lobby.gameType.isPlayable else { return false }
         return lobby.players.count >= lobby.gameType.minPlayers
             && lobby.players.allSatisfy { $0.isHost || $0.isReady }
+            && lobby.players.allSatisfy { !awayIds.contains($0.id) }
+    }
+
+    /// What the board shows while a move is on its way.
+    var pendingMoveStatus: String {
+        if relayedMoveDelivered, let hostId = lobby?.hostId { return "Move sent to \(name(for: hostId))'s phone" }
+        return "Sending move…"
     }
 
     // MARK: - Local actions
 
     func hostLobby(_ gameType: GameType) {
-        guard lobby == nil, gameType.isPlayable else { return }
+        guard lobby == nil, joiningLobbyId == nil else {
+            notice = "Finish or leave your current game first."
+            return
+        }
+        guard gameType.isPlayable else { return }
         let me = session.localIdentity
         lobby = Lobby(
             id: UUID(),
@@ -161,7 +185,11 @@ final class GameCoordinator {
     }
 
     func join(_ offer: Offer) {
-        guard lobby == nil, !offer.isFull else { return }
+        guard lobby == nil else {
+            notice = "Finish or leave your current game first."
+            return
+        }
+        guard !offer.isFull else { return }
         joiningLobbyId = offer.id
         let sent = session.send(.joinRequest(LobbyRefPayload(lobbyId: offer.id)), sessionId: offer.id, to: [offer.host.id])
         if sent == nil {
@@ -176,6 +204,7 @@ final class GameCoordinator {
         if accept {
             join(invitation)
         } else {
+            declinedHosts[invitation.host.id] = .now
             session.send(
                 .joinReject(JoinRejectPayload(lobbyId: invitation.id, reason: .declined)),
                 sessionId: invitation.id,
@@ -196,6 +225,7 @@ final class GameCoordinator {
         self.lobby = lobby
         seenMoveIds = []
         rematchVotes = []
+        turnRevision = 0
 
         let others = otherMembers
         session.send(.startGame(StartGamePayload(lobbyId: lobby.id, gameType: lobby.gameType, seats: lobby.seats)), sessionId: lobby.id, to: others)
@@ -245,9 +275,12 @@ final class GameCoordinator {
 
     /// A move that arrived over Bluetooth while this host's app was in the background.
     /// It goes through exactly the same checks as any other move.
-    func receiveRelayedMove(_ request: MoveRequestPayload, lobbyId: UUID, from playerId: String) {
-        guard isHost, lobby?.id == lobbyId else { return }
+    /// Returns whether this phone is hosting that game (so the sender learns if it arrived somewhere useful).
+    @discardableResult
+    func receiveRelayedMove(_ request: MoveRequestPayload, lobbyId: UUID, from playerId: String) -> Bool {
+        guard isHost, let lobby, lobby.id == lobbyId, lobby.phase == .playing, lobby.seats.contains(playerId) else { return false }
         hostHandleMove(request, from: playerId)
+        return true
     }
 
     func requestRematch() {
@@ -268,9 +301,13 @@ final class GameCoordinator {
         resetMatch()
     }
 
-    /// Clears an ended match so the user can return to the Games list.
+    /// Clears an ended match so the user can return to the Games list. A guest tells the
+    /// host, in case the host still thinks the game is on.
     func dismissEndedMatch() {
-        guard case .ended = lobby?.phase else { return }
+        guard let lobby, case .ended = lobby.phase else { return }
+        if !isHost {
+            session.send(.leave(LeavePayload(lobbyId: lobby.id)), sessionId: lobby.id, to: [lobby.hostId])
+        }
         resetMatch()
     }
 
@@ -301,7 +338,7 @@ final class GameCoordinator {
             receiveRematchVote(ref, from: identity)
         case .leave(let leave):
             receiveLeave(leave, from: identity)
-        case .hello, .chat, .heartbeat, .error, .presence:
+        case .hello, .chat, .heartbeat, .error, .presence, .proof:
             break
         }
     }
@@ -310,15 +347,21 @@ final class GameCoordinator {
         // The advertised host must be the sender; ignore offers we can't play.
         guard offer.gameType.isPlayable else { return }
         let named = Offer(payload: offer, host: identity)
+        // One open game per host: a host advertising many games at once would flood the list.
+        offers = offers.filter { $0.value.host.id != identity.id || $0.key == offer.lobbyId }
         switch offer.invitedPlayerId {
         case nil:
             offers[offer.lobbyId] = named
         case localId?:
             offers[offer.lobbyId] = named
+            // A host whose invitation was just declined can't keep popping it up.
+            if let declined = declinedHosts[identity.id], Date.now.timeIntervalSince(declined) < Self.declineMute { return }
+            // A finished game still on screen shouldn't block new invitations.
+            if case .ended = lobby?.phase { resetMatch() }
             if lobby == nil, joiningLobbyId == nil, invitation == nil {
                 invitation = named
             } else if invitation?.id != offer.lobbyId {
-                session.send(.joinReject(JoinRejectPayload(lobbyId: offer.lobbyId, reason: .declined)), sessionId: offer.lobbyId, to: [identity.id])
+                session.send(.joinReject(JoinRejectPayload(lobbyId: offer.lobbyId, reason: .busy)), sessionId: offer.lobbyId, to: [identity.id])
             }
         default:
             break
@@ -332,6 +375,10 @@ final class GameCoordinator {
         }
         if lobby.player(identity.id) != nil {
             // A member asking again: a lost roster, or a returning player who needs catching up.
+            if case .ended(let message) = lobby.phase {
+                session.send(.gameEvent(GameEventPayload(event: .matchEnded, message: message)), sessionId: lobby.id, to: [identity.id])
+                return
+            }
             broadcastRoster()
             resync(identity.id)
             return
@@ -370,10 +417,10 @@ final class GameCoordinator {
         joiningLobbyId = nil
         invitation = nil
         offers[roster.lobbyId] = nil
-        // Names relayed by the host get the same safety filtering as names we see directly.
+        // Names relayed by the host get the same cleaning and filtering as names we see directly.
         let players = roster.players.map { player in
             var safe = player
-            safe.nickname = session.filter.safeNickname(player.nickname)
+            safe.nickname = session.filter.safeNickname(Nickname.sanitize(player.nickname) ?? "Player")
             return safe
         }
         if var current = lobby, current.id == roster.lobbyId {
@@ -387,9 +434,11 @@ final class GameCoordinator {
     }
 
     private func receiveReject(_ reject: JoinRejectPayload, from identity: PeerIdentity) {
-        if isHost, lobby?.id == reject.lobbyId, reject.reason == .declined {
+        if isHost, lobby?.id == reject.lobbyId, reject.reason == .declined || reject.reason == .busy {
             invitedIds.remove(identity.id)
-            notice = "\(identity.nickname) declined your invitation."
+            notice = reject.reason == .busy
+                ? "\(identity.nickname) is in another game right now."
+                : "\(identity.nickname) declined your invitation."
             return
         }
         // We asked our host to catch us up after being away, but the game is gone.
@@ -404,7 +453,7 @@ final class GameCoordinator {
         notice = switch reject.reason {
         case .lobbyFull: "That game is full."
         case .alreadyStarted: "That game has already started."
-        case .notFound, .declined: "That game is no longer available."
+        case .notFound, .declined, .busy: "That game is no longer available."
         }
         if reject.reason != .lobbyFull { offers[reject.lobbyId] = nil }
     }
@@ -431,6 +480,16 @@ final class GameCoordinator {
     }
 
     private func receiveSnapshot(_ payload: StateSnapshotPayload, sessionId: UUID?, from identity: PeerIdentity) {
+        // The host's "start" message was lost (for example, we dropped just then); the first
+        // snapshot that seats us starts the match here too.
+        if var waiting = lobby, !isHost, waiting.phase == .lobby, sessionId == waiting.id, waiting.hostId == identity.id,
+           payload.state.gameType == waiting.gameType, payload.state.playerIds.contains(localId) {
+            waiting.seats = payload.state.playerIds
+            waiting.phase = .playing
+            lobby = waiting
+            snapshot = nil
+            revision = -1
+        }
         guard let lobby, !isHost, sessionId == lobby.id, lobby.hostId == identity.id,
               lobby.phase == .playing,
               payload.state.gameType == lobby.gameType,
@@ -449,12 +508,14 @@ final class GameCoordinator {
 
     private func receiveEvent(_ event: GameEventPayload, sessionId: UUID?, from identity: PeerIdentity) {
         guard var lobby, sessionId == lobby.id, lobby.hostId == identity.id else { return }
+        // Text from the host is shown to the user, so it gets the same filter as chat.
+        let message = session.filter.check(event.message).isAllowed ? event.message : "The game ended."
         switch event.event {
         case .moveRejected:
             pendingMoveId = nil
-            notice = event.message
+            notice = session.filter.check(event.message).isAllowed ? event.message : "That move wasn't accepted."
         case .matchEnded, .hostEnded:
-            lobby.phase = .ended(event.message)
+            lobby.phase = .ended(message)
             self.lobby = lobby
             pendingMoveId = nil
         }
@@ -488,39 +549,74 @@ final class GameCoordinator {
             joiningLobbyId = nil
         }
         if reason == .blocked { invitedIds.remove(identity.id) }
-        // A dropped link mid-match is usually an app switch: pause instead of ending.
-        if reason == .connectionLost, let lobby, lobby.phase == .playing, lobby.seats.contains(identity.id) {
-            markAway(identity)
-            return
+        // A dropped link is usually an app switch: pause instead of ending, in the lobby too.
+        if reason != .blocked, let lobby, lobby.player(identity.id) != nil {
+            switch lobby.phase {
+            case .lobby, .playing:
+                markAway(identity, quietly: reason == .localSuspend)
+                return
+            case .ended:
+                break
+            }
         }
         memberLeft(identity, reason: "\(identity.nickname) disconnected.")
     }
 
-    private func markAway(_ identity: PeerIdentity) {
+    /// `quietly`: our own app is going to the background, so don't nudge or start timeouts.
+    private func markAway(_ identity: PeerIdentity, quietly: Bool = false) {
         awayIds.insert(identity.id)
         // A move sent to an absent host may have been lost; let the player send it again later.
-        if identity.id == lobby?.hostId { pendingMoveId = nil }
+        if identity.id == lobby?.hostId, !relayedMoveDelivered { pendingMoveId = nil }
+        if quietly {
+            suspendedLocally = true
+            return
+        }
+        startAwayTimer(for: identity)
+        requestNudgesIfNeeded()
+        startNudgeRetries()
+    }
+
+    private func startAwayTimer(for identity: PeerIdentity) {
         awayTimers[identity.id]?.cancel()
         awayTimers[identity.id] = Task { [weak self] in
             try? await Task.sleep(for: Self.awayTimeout)
             guard !Task.isCancelled else { return }
             self?.awayTimedOut(identity)
         }
-        requestNudgesIfNeeded()
-        startNudgeRetries()
+    }
+
+    /// Back in the foreground. People who reconnect within a few seconds were never really
+    /// away; for anyone still missing, start the usual timeout and nudges.
+    private func sessionResumed() {
+        guard suspendedLocally else { return }
+        suspendedLocally = false
+        let ids = awayIds
+        for id in ids where awayTimers[id] == nil {
+            let nickname = lobby?.player(id)?.nickname ?? session.knownIdentities[id]?.nickname ?? "Player"
+            startAwayTimer(for: PeerIdentity(id: id, nickname: nickname))
+        }
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(20))
+            guard let self, !self.awayIds.isEmpty else { return }
+            self.requestNudgesIfNeeded()
+            self.startNudgeRetries()
+        }
     }
 
     /// Nudges can miss (out of range for a moment); keep asking while someone is away.
     /// The router doesn't repeat a nudge that was already delivered.
     private func startNudgeRetries() {
         guard nudgeRetry == nil else { return }
+        nudgeRetryGeneration += 1
+        let generation = nudgeRetryGeneration
         nudgeRetry = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: Self.nudgeRetryInterval)
                 guard let self, !self.awayIds.isEmpty, self.lobby?.phase == .playing else { break }
                 self.requestNudgesIfNeeded()
             }
-            self?.nudgeRetry = nil
+            // Only clear our own handle; a newer loop may have replaced it.
+            if let self, self.nudgeRetryGeneration == generation { self.nudgeRetry = nil }
         }
     }
 
@@ -535,6 +631,7 @@ final class GameCoordinator {
         if awayIds.remove(identity.id) != nil {
             awayTimers.removeValue(forKey: identity.id)?.cancel()
             if isHost {
+                if lobby?.phase == .lobby { broadcastRoster() }
                 resync(identity.id)
             } else if let lobby, identity.id == lobby.hostId {
                 // A move relayed while the host was away has been applied (or rejected) by now;
@@ -543,6 +640,10 @@ final class GameCoordinator {
                 relayedMoveDelivered = false
                 // Ask explicitly too, in case the host's resend arrived before we recognized it.
                 session.send(.joinRequest(LobbyRefPayload(lobbyId: lobby.id)), sessionId: lobby.id, to: [identity.id])
+                // A rematch vote cast while the host was away never reached them.
+                if rematchVotes.contains(localId) {
+                    session.send(.rematchRequest(LobbyRefPayload(lobbyId: lobby.id)), sessionId: lobby.id, to: [identity.id])
+                }
             }
         }
         // Let newly connected peers see an open lobby, and repeat an invitation sent while they were away.
@@ -593,14 +694,16 @@ final class GameCoordinator {
         guard isHost, let lobby, lobby.phase == .playing, let state = authoritative, lobby.seats.contains(playerId) else { return }
         // Exactly-once: a repeated move id is dropped silently.
         guard seenMoveIds.insert(request.moveId).inserted else { return }
-        // Call One!/Catch! race against turns by design, so they skip the revision check;
-        // the host applies whichever arrives first.
-        guard request.baseRevision == revision || GameEngine.isTurnIndependent(request.move) else {
+        // Call One!/Catch! race against turns by design, so they skip the revision check, and
+        // a move based on the latest turn stays valid even if one of those landed meanwhile.
+        let turnIndependent = GameEngine.isTurnIndependent(request.move)
+        guard request.baseRevision == revision || request.baseRevision >= turnRevision || turnIndependent else {
             return rejectMove(MoveErrorMessage.staleBoard, to: playerId)
         }
         do {
             let next = try GameEngine.apply(request.move, by: playerId, to: state)
             commit(next, revision: revision + 1)
+            if !turnIndependent { turnRevision = revision }
         } catch {
             rejectMove(error.message, to: playerId)
         }
@@ -621,6 +724,7 @@ final class GameCoordinator {
         rematchVotes = []
         seenMoveIds = []
         commit(GameEngine.rematch(from: state), revision: revision + 1)
+        turnRevision = revision
     }
 
     /// Stores a new authoritative state and sends each seated player their projection.
@@ -668,7 +772,7 @@ final class GameCoordinator {
     /// Asks the app to nudge anyone the match is waiting on who is away. Every device that
     /// notices asks; the nudge service and the receiving phone both rate-limit.
     private func requestNudgesIfNeeded() {
-        guard let lobby, lobby.phase == .playing, let snapshot else { return }
+        guard !suspendedLocally, let lobby, lobby.phase == .playing, let snapshot else { return }
         for playerId in snapshot.awaitingPlayerIds.intersection(awayIds) where playerId != localId {
             onNudgeNeeded?(playerId, lobby.gameType)
         }
@@ -728,6 +832,7 @@ final class GameCoordinator {
         nudgeRetry?.cancel()
         nudgeRetry = nil
         relayedMoveDelivered = false
+        turnRevision = 0
     }
 }
 

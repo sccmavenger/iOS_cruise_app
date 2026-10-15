@@ -95,7 +95,8 @@ nonisolated final class MultipeerTransport: NSObject, PeerTransport, @unchecked 
         }
     }
 
-    func invite(_ peer: PeerKey) {
+    @discardableResult
+    func invite(_ peer: PeerKey) -> Bool {
         let target: (MCNearbyServiceBrowser, MCPeerID, MCSession)? = state.withLock { state in
             guard let browser = state.browser,
                   let session = state.session,
@@ -104,9 +105,10 @@ nonisolated final class MultipeerTransport: NSObject, PeerTransport, @unchecked 
             else { return nil }
             return (browser, peerID, session)
         }
-        guard let (browser, peerID, session) = target else { return }
+        guard let (browser, peerID, session) = target else { return false }
         let context = try? JSONEncoder().encode(InvitationContext(v: Self.protocolVersion))
         browser.invitePeer(peerID, to: session, withContext: context, timeout: Self.invitationTimeout)
+        return true
     }
 
     func respond(toInvitation invitationId: UUID, accept: Bool) {
@@ -297,7 +299,18 @@ extension MultipeerTransport: MCNearbyServiceBrowserDelegate {
     }
 
     func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {
-        continuation.yield(.peerLost(key(for: peerID)))
+        let key = key(for: peerID)
+        continuation.yield(.peerLost(key))
+        // Forget peers that are gone and not connected, so a device cycling through peer
+        // ids can't grow these tables without limit.
+        state.withLock { state in
+            let connected = state.session?.connectedPeers.contains(peerID) ?? false
+            let invitedUs = state.pendingInvitations.values.contains { $0.peerID == peerID }
+            if !connected, !invitedUs {
+                state.keysByPeer[peerID] = nil
+                state.peersByKey[key] = nil
+            }
+        }
     }
 
     func browser(_ browser: MCNearbyServiceBrowser, didNotStartBrowsingForPeers error: any Error) {

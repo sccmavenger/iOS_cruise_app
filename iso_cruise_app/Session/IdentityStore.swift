@@ -16,6 +16,9 @@ final class IdentityStore {
     struct Snapshot: Codable, Equatable {
         var localId: String
         var lastActive: Date
+        /// When this id was first made. Ids are retired after `maxAge` even if used daily,
+        /// so the Bluetooth beacon derived from them can't track a phone for long.
+        var createdAt: Date? = nil
         /// Known people: id → nickname.
         var known: [String: String]
         /// Raw nudge keys by person id.
@@ -24,6 +27,7 @@ final class IdentityStore {
     }
 
     static let lifetime: TimeInterval = 12 * 60 * 60
+    static let maxAge: TimeInterval = 24 * 60 * 60
 
     private let service: String
     private let account = "session"
@@ -42,9 +46,15 @@ final class IdentityStore {
         var result: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
               let data = result as? Data,
-              let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data),
-              now().timeIntervalSince(snapshot.lastActive) < Self.lifetime
+              let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data)
         else { return nil }
+        guard now().timeIntervalSince(snapshot.lastActive) < Self.lifetime,
+              now().timeIntervalSince(snapshot.createdAt ?? snapshot.lastActive) < Self.maxAge
+        else {
+            // Expired: remove it rather than leaving old keys and names behind.
+            clear()
+            return nil
+        }
         return snapshot
     }
 

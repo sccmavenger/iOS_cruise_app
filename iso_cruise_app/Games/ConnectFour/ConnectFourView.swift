@@ -37,6 +37,9 @@ struct ConnectFourView: View {
             }
         }
         .animation(.spring(duration: 0.35, bounce: 0.25), value: state)
+        .onChange(of: statusText) { _, text in
+            AccessibilityNotification.Announcement(text).post()
+        }
     }
 
     private var statusText: String {
@@ -46,7 +49,7 @@ struct ConnectFourView: View {
         case .draw:
             return "It's a draw"
         case nil:
-            if games.pendingMoveId != nil { return "Sending move…" }
+            if games.pendingMoveId != nil { return games.pendingMoveStatus }
             return isMyTurn ? "Your turn: tap a column" : "\(games.name(for: state.playerId(for: state.turn)))'s turn"
         }
     }

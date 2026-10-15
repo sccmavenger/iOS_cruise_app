@@ -43,7 +43,9 @@ protocol PeerTransport: AnyObject {
     var events: AsyncStream<TransportEvent> { get }
     func start(displayName: String)
     func stop()
-    func invite(_ peer: PeerKey)
+    /// Returns `false` if the invitation couldn't be sent (unknown peer, session full, not running).
+    @discardableResult
+    func invite(_ peer: PeerKey) -> Bool
     func respond(toInvitation invitationId: UUID, accept: Bool)
     func send(_ data: Data, to peers: [PeerKey]) throws
     /// Leaves the current session (all peers) while continuing to advertise and browse.

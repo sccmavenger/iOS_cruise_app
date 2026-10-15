@@ -25,6 +25,12 @@ import UIKit
         }
         _demo = State(initialValue: demo)
         #endif
+        // Keychain items survive deleting the app; a fresh install starts with a fresh identity.
+        let installMarker = "identity.installMarker"
+        if !UserDefaults.standard.bool(forKey: installMarker) {
+            IdentityStore().clear()
+            UserDefaults.standard.set(true, forKey: installMarker)
+        }
         var identity: IdentityStore? = IdentityStore()
         #if DEBUG
         if demo != nil { identity = nil }
@@ -71,10 +77,20 @@ import UIKit
             case .background:
                 // iOS drops peer-to-peer sessions now anyway. Tell peers we're stepping away
                 // first, so they show "away", keep the game paused, and nudge us over Bluetooth.
-                let task = UIApplication.shared.beginBackgroundTask(withName: "Step away")
+                nudges.appWillBackground()
+                var task = UIBackgroundTaskIdentifier.invalid
+                task = UIApplication.shared.beginBackgroundTask(withName: "Step away") {
+                    // Out of time: suspend now rather than being terminated.
+                    session.suspend()
+                    UIApplication.shared.endBackgroundTask(task)
+                    task = .invalid
+                }
                 Task {
                     await session.stepAway()
-                    UIApplication.shared.endBackgroundTask(task)
+                    if task != .invalid {
+                        UIApplication.shared.endBackgroundTask(task)
+                        task = .invalid
+                    }
                 }
             case .active:
                 session.resume()

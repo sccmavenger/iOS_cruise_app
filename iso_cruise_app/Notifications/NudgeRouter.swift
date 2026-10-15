@@ -54,13 +54,18 @@ final class NudgeRouter {
             self.send(.move(lobbyId: lobbyId, request: request), to: hostId, completion: completion)
         }
         nudges.onReceive = { [weak self] data in
-            self?.receive(data)
+            self?.receive(data) ?? false
         }
     }
 
     /// Starts advertising this phone's doorbell (asks for Bluetooth permission the first time).
     func start() {
         nudges.start(localId: session.localId)
+    }
+
+    /// The app is leaving the foreground: sends in progress can't finish, so report them as failed.
+    func appWillBackground() {
+        nudges.failQueued()
     }
 
     // MARK: - Outgoing
@@ -99,31 +104,42 @@ final class NudgeRouter {
 
     // MARK: - Incoming
 
-    func receive(_ data: Data) {
-        guard let (from, message) = Nudge.open(data, key: { [session] in session.nudgeKey(openingFrom: $0) }),
+    /// Handles one incoming write. Returns `false` if it was rejected, so the sender's phone
+    /// learns the nudge didn't land (rather than thinking it was delivered).
+    @discardableResult
+    func receive(_ data: Data) -> Bool {
+        let keys = Dictionary(uniqueKeysWithValues: session.knownIdentities.keys.compactMap { id in
+            session.nudgeKey(openingFrom: id).map { (id, $0) }
+        })
+        guard let (from, message) = Nudge.open(data, keys: keys),
               replay.isNew(message.id),
               let sender = session.knownIdentities[from]
-        else { return }
+        else { return false }
 
         switch message.kind {
         case .chat(let preview, let conversationId):
             // If they're connected, the real message arrives over the session instead.
-            guard !session.isConnected(from), received.allow(from, message.kind.topic ?? "chat", at: .now) else { return }
+            guard !session.isConnected(from) else { return true }
+            guard received.allow(from, message.kind.topic ?? "chat", at: .now) else { return true }
             // Filtered again here, like every message this phone shows.
             let safePreview = preview.flatMap { session.filter.check($0).isAllowed ? $0 : nil }
-            // nil is "Everyone". A conversation we don't know yet (a brand-new group) is filed
-            // under the sender for now; the real message lands in the right place on return.
-            let target = conversationId.map { session.chat.conversation($0)?.id ?? session.directConversation(with: sender).id }
-                ?? ChatStore.everyoneId
-            notifications.chatNudgeReceived(title: title(for: sender, in: target), preview: safePreview, conversationId: target)
+            // nil is "Everyone". A conversation we don't know yet (a brand-new group) opens the
+            // chat list; the real message lands in the right place when they reconnect.
+            let target = conversationId.flatMap { session.chat.conversation($0)?.id }
+                ?? (conversationId == nil ? ChatStore.everyoneId : nil)
+            // No banner for the chat that's open right now.
+            if let target, notifications.isAppActive, session.chat.visibleConversationId == target { return true }
+            notifications.chatNudgeReceived(title: target.map { title(for: sender, in: $0) } ?? sender.nickname,
+                                            preview: safePreview, conversationId: target)
         case .turn(let game):
-            guard !session.isConnected(from), received.allow(from, "turn-\(game.rawValue)", at: .now) else { return }
+            guard !session.isConnected(from), received.allow(from, "turn-\(game.rawValue)", at: .now) else { return true }
             notifications.turnNudgeReceived(in: game, from: sender)
         case .invite(let game):
-            guard received.allow(from, "invite-\(game.rawValue)", at: .now) else { return }
+            guard received.allow(from, "invite-\(game.rawValue)", at: .now) else { return true }
             notifications.inviteNudgeReceived(to: game, from: sender)
         case .move(let lobbyId, let request):
-            games.receiveRelayedMove(request, lobbyId: lobbyId, from: from)
+            return games.receiveRelayedMove(request, lobbyId: lobbyId, from: from)
         }
+        return true
     }
 }

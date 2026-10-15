@@ -50,7 +50,7 @@ struct MatchContainerView: View {
                 Button("Leave Game", role: .destructive) { games.leave() }
                 Button("Stay", role: .cancel) {}
             } message: {
-                Text(games.isHost ? "You're the host. Leaving ends the game for everyone." : "The game will end for the other players.")
+                Text(leaveMessage)
             }
             .alert(
                 games.notice ?? "",
@@ -63,6 +63,14 @@ struct MatchContainerView: View {
             }
         }
         .interactiveDismissDisabled()
+        .onAppear { app.isMatchVisible = true }
+        .onDisappear { app.isMatchVisible = false }
+    }
+
+    private var leaveMessage: String {
+        guard let lobby = games.lobby else { return "" }
+        if games.isHost { return "You're the host. Leaving ends the game for everyone." }
+        return lobby.phase == .lobby ? "Your seat will open up for someone else." : "The game will end for the other players."
     }
 }
 
@@ -106,7 +114,9 @@ struct LobbyView: View {
                             .accessibilityHidden(true)
                         Text(player.id == games.localId ? "\(player.nickname) (you)" : "\(player.nickname) #\(Nickname.tag(for: player.id))")
                         Spacer()
-                        if player.isHost {
+                        if games.awayIds.contains(player.id) {
+                            Label("Away", systemImage: "moon.zzz.fill").foregroundStyle(.secondary)
+                        } else if player.isHost {
                             Text("Host").foregroundStyle(.secondary)
                         } else {
                             Label(player.isReady ? "Ready" : "Not ready", systemImage: player.isReady ? "checkmark.circle.fill" : "circle.dashed")
@@ -176,7 +186,9 @@ struct LobbyView: View {
                     if !games.canStart {
                         Text(lobby.players.count < lobby.gameType.minPlayers
                              ? "Waiting for \(lobby.gameType.minPlayers - lobby.players.count) more player(s)."
-                             : "Waiting for everyone to be ready.")
+                             : lobby.players.contains(where: { games.awayIds.contains($0.id) })
+                                ? "Waiting for everyone to come back."
+                                : "Waiting for everyone to be ready.")
                     }
                 }
             } else if let me {
@@ -277,12 +289,14 @@ extension MatchView {
 struct MatchEndedView: View {
     let reason: String
     @Environment(GameCoordinator.self) private var games
+    @Environment(AppState.self) private var app
 
     var body: some View {
         VStack(spacing: 20) {
             IllustratedMessage(title: "Game over", message: reason)
             Button {
                 games.dismissEndedMatch()
+                app.selectedTab = .games
             } label: {
                 Text("Back to Games")
                     .font(.headline)

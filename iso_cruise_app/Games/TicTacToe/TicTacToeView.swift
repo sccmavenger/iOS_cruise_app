@@ -42,7 +42,7 @@ struct TicTacToeView: View {
         case .draw:
             return "It's a draw"
         case nil:
-            if games.pendingMoveId != nil { return "Sending move…" }
+            if games.pendingMoveId != nil { return games.pendingMoveStatus }
             return isMyTurn ? "Your turn" : "\(games.name(for: state.playerId(for: state.turn)))'s turn"
         }
     }

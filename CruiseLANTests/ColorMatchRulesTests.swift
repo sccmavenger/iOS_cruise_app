@@ -395,4 +395,18 @@ final class ColorMatchRulesTests {
             array.forEach { collectCardIds($0, into: &ids) }
         }
     }
+
+    @Test("Catch only works while the player still holds exactly one card")
+    func catchNeedsOneCard() throws {
+        let skip = card(.red, .skip)
+        // Two players: A plays a Skip as their second-to-last card without calling One, then draws.
+        var state = table(players: ["a", "b"], hands: ["a": [skip, card(.blue, .number(1))], "b": filler(3)], top: card(.red, .number(4)), drawPile: filler(5))
+        state = try ColorMatchRules.apply(.play(cardId: skip.id, chosenColor: nil, callOne: false), by: "a", to: state, using: &rng)
+        #expect(state.vulnerablePlayer == "a")
+        state = try ColorMatchRules.apply(.draw, by: "a", to: state, using: &rng)
+        #expect((state.hands["a"]?.count ?? 0) > 1)
+        #expect(throws: MoveError.notAllowed) {
+            _ = try ColorMatchRules.apply(.catchOne(target: "a"), by: "b", to: state, using: &self.rng)
+        }
+    }
 }

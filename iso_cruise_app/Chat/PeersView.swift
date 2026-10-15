@@ -6,6 +6,7 @@ import UIKit
 struct PeersView: View {
     @Environment(SessionManager.self) private var session
     @Environment(AppState.self) private var app
+    @Environment(GameCoordinator.self) private var games
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     /// Ticks every few seconds so the troubleshooting tips can appear after a delay.
@@ -56,6 +57,8 @@ struct PeersView: View {
                     }
                     if !session.connectedPeers.isEmpty {
                         Button("Disconnect from Everyone", role: .destructive) {
+                            // Leave any game properly first, so others aren't left waiting for us.
+                            if games.lobby != nil { games.leave() }
                             session.disconnectAll()
                         }
                     }
@@ -78,6 +81,22 @@ struct PeersView: View {
                                     .foregroundStyle(.secondary)
                             }
                             .accessibilityElement(children: .combine)
+                            .swipeActions {
+                                Button("Block", systemImage: "hand.raised", role: .destructive) {
+                                    session.block(identityId: identity.id)
+                                }
+                                Button("Message", systemImage: "bubble.left") { message(identity) }
+                                    .tint(Theme.teal)
+                            }
+                            .contextMenu {
+                                Button("Message", systemImage: "bubble.left") { message(identity) }
+                                Button("Report…", systemImage: "exclamationmark.bubble") {
+                                    reportTarget = ReportTarget(identityId: identity.id, name: identity.nickname, message: nil)
+                                }
+                                Button("Block", systemImage: "hand.raised", role: .destructive) {
+                                    session.block(identityId: identity.id)
+                                }
+                            }
                         }
                     } header: {
                         Text("Away")

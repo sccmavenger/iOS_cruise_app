@@ -38,7 +38,7 @@ final class FakeNetwork {
         weak var owner: Node?
         func start(displayName: String) {}
         func stop() {}
-        func invite(_ peer: PeerKey) {}
+        func invite(_ peer: PeerKey) -> Bool { true }
         func respond(toInvitation invitationId: UUID, accept: Bool) {}
         func disconnectAll() {}
         func fingerprint(for peer: PeerKey) -> String? { peer.raw.uuidString }
@@ -388,6 +388,103 @@ struct GameCoordinatorTests {
         #expect(host.games.revision == 0)
     }
 
+    // MARK: - Hardening regressions
+
+    @Test("A guest who returns after the match ended is told it ended")
+    func endedWhileAway() throws {
+        let third = network.addNode("Tess")
+        network.connect(third, host)
+        network.connect(third, guest)
+        host.games.hostLobby(.colorMatch)
+        for node in [guest, third] {
+            let offer = try #require(node.games.offers(for: .colorMatch).first)
+            node.games.join(offer)
+            node.games.setReady(true)
+        }
+        host.games.startGame()
+        network.disconnect(host, third)                    // Tess steps away.
+        guest.games.leave()                                // Gus leaves, so the match ends while Tess is away.
+        network.connect(host, third)                       // Tess is back.
+        guard case .ended = third.games.lobby?.phase else {
+            Issue.record("Tess should learn the match ended, not stay on the old board")
+            return
+        }
+    }
+
+    @Test("A rematch vote cast while the host was away still counts")
+    func rematchVoteWhileHostAway() throws {
+        _ = try startTicTacToe()
+        for cell in [0, 3, 1, 4, 2] { try play(cell) }
+        network.disconnect(host, guest)
+        guest.games.requestRematch()
+        network.connect(host, guest)
+        host.games.requestRematch()
+        #expect(tttState(host)?.round == 2)
+    }
+
+    @Test("Stepping away in the lobby keeps your seat; the host can't start until you're back")
+    func lobbyAway() throws {
+        host.games.hostLobby(.ticTacToe)
+        let offer = try #require(guest.games.offers(for: .ticTacToe).first)
+        guest.games.join(offer)
+        guest.games.setReady(true)
+        network.disconnect(host, guest)
+        #expect(host.games.lobby?.players.count == 2)
+        #expect(!host.games.canStart)
+        #expect(guest.games.lobby?.phase == .lobby)
+        network.connect(host, guest)
+        #expect(host.games.canStart)
+    }
+
+    @Test("A guest who missed the start message joins the match from the first snapshot")
+    func lostStartMessage() throws {
+        host.games.hostLobby(.ticTacToe)
+        let offer = try #require(guest.games.offers(for: .ticTacToe).first)
+        guest.games.join(offer)
+        guest.games.setReady(true)
+        // Drop just the start message.
+        network.interceptor = { data, _, _ in
+            guard let envelope = try? EnvelopeCodec.decode(data) else { return true }
+            return envelope.kind != .startGame
+        }
+        host.games.startGame()
+        network.interceptor = nil
+        #expect(guest.games.lobby?.phase == .playing)
+        #expect(guest.games.snapshot == host.games.snapshot)
+    }
+
+    @Test("Inviting someone already in a game says they're busy instead of 'declined'")
+    func busyInvite() throws {
+        let third = network.addNode("Tess")
+        network.connect(third, host)
+        network.connect(third, guest)
+        _ = try startTicTacToe()                 // Gus is playing with Hana.
+        third.games.hostLobby(.chess)
+        let gus = try #require(third.session.identity(for: guest.id))
+        third.games.invite(gus)
+        #expect(third.games.notice?.contains("in another game") == true)
+    }
+
+    @Test("A finished game on screen doesn't block a new invitation")
+    func invitationAfterEndedGame() throws {
+        let third = network.addNode("Tess")
+        network.connect(third, host)
+        network.connect(third, guest)
+        _ = try startTicTacToe()
+        host.games.leave()                        // Gus now sees "Game over".
+        guard case .ended = guest.games.lobby?.phase else { Issue.record("expected ended"); return }
+        third.games.hostLobby(.chess)
+        third.games.invite(try #require(third.session.identity(for: guest.id)))
+        #expect(guest.games.invitation?.payload.gameType == .chess)
+    }
+
+    @Test("Host-sent text that fails the safety filter isn't shown")
+    func filteredHostText() throws {
+        let lobbyId = try startTicTacToe()
+        host.session.send(.gameEvent(GameEventPayload(event: .moveRejected, message: "call me 555 123 4567")), sessionId: lobbyId, to: [guest.id])
+        #expect(guest.games.notice?.contains("555") != true)
+    }
+
     // MARK: - Conversations
 
     @Test("A one-on-one chat reaches only the other person, in the same conversation on both phones")
@@ -538,8 +635,13 @@ struct GameCoordinatorTests {
         #expect(guest.games.invitation == nil)
         #expect(host.games.notice?.contains("declined") == true)
 
+        // Right after a decline, the same host can't pop the invitation up again.
         host.games.invite(guestIdentity)
-        guest.games.respondToInvitation(accept: true)
+        #expect(guest.games.invitation == nil)
+
+        // The guest can still join on their own.
+        let offer = try #require(guest.games.offers(for: .ticTacToe).first)
+        guest.games.join(offer)
         #expect(guest.games.lobby?.id == host.games.lobby?.id)
     }
 

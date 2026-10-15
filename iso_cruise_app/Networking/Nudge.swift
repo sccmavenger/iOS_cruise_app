@@ -12,6 +12,8 @@ import Foundation
 ///   the encrypted peer-to-peer link. Nobody else can read a nudge or forge one, and a
 ///   tampered nudge fails to open.
 /// - Each message has an id and a timestamp. Old or repeated messages are dropped.
+/// - Nothing outside the sealed box says who sent it: the receiver tries the few keys it
+///   holds, so a nudge on the air can't be linked to a person.
 /// - A phone advertises a service UUID derived from its per-launch CruiseLAN id, shared
 ///   only with people it has connected with. It changes every launch.
 nonisolated enum Nudge {
@@ -43,12 +45,12 @@ nonisolated enum Nudge {
         var kind: Kind
     }
 
-    static let version = 2
+    static let version = 3
     /// Largest single write iOS sends with response between iPhones.
     static let maxPayloadBytes = 512
     static let maxPreviewBytes = 120
     /// Nudges older than this (or from the future by more than this) are dropped.
-    static let maxAge: TimeInterval = 5 * 60
+    static let maxAge: TimeInterval = 2 * 60
     /// Fixed characteristic that receives nudges inside each phone's service.
     static let characteristicUUIDString = "6E1D5A2C-3F4B-4C8E-9A7D-2B1F0C9E8D71"
     /// After a nudge on a topic is delivered, don't repeat it for this long.
@@ -78,32 +80,27 @@ nonisolated enum Nudge {
         return result
     }
 
-    /// Wire format: [version: 1 byte][sender id length: 1 byte][sender id, UTF-8][ChaChaPoly
-    /// combined box: nonce + ciphertext + tag]. The sender id only selects the key; it isn't
-    /// trusted until the box opens with that sender's key.
+    /// Wire format: [version: 1 byte][ChaChaPoly combined box: nonce + ciphertext + tag].
+    /// `senderId` isn't on the wire; the key that opens the box identifies the sender.
     static func seal(_ message: Message, from senderId: String, key: SymmetricKey) -> Data? {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .secondsSince1970
-        let sender = Data(senderId.utf8)
-        guard sender.count <= EnvelopeCodec.maxSenderIdLength,
-              let plain = try? encoder.encode(message),
+        guard let plain = try? encoder.encode(message),
               let box = try? ChaChaPoly.seal(plain, using: key).combined
         else { return nil }
-        let data = Data([UInt8(version), UInt8(sender.count)]) + sender + box
+        let data = Data([UInt8(version)]) + box
         return data.count <= maxPayloadBytes ? data : nil
     }
 
-    /// Opens untrusted bytes from the air. Returns `nil` for anything malformed,
-    /// unauthenticated, from an unknown sender, or too old.
-    static func open(_ data: Data, now: Date = .now, key: (String) -> SymmetricKey?) -> (from: String, message: Message)? {
+    /// Opens untrusted bytes from the air with whichever of `keys` (person id → the key we
+    /// gave them) fits. Returns `nil` for anything malformed, unauthenticated, or too old.
+    static func open(_ data: Data, now: Date = .now, keys: [String: SymmetricKey]) -> (from: String, message: Message)? {
         let bytes = [UInt8](data)
-        guard bytes.count <= maxPayloadBytes, bytes.count > 2, Int(bytes[0]) == version else { return nil }
-        let senderLength = Int(bytes[1])
-        guard senderLength > 0, senderLength <= EnvelopeCodec.maxSenderIdLength, bytes.count > 2 + senderLength,
-              let from = String(bytes: bytes[2..<(2 + senderLength)], encoding: .utf8),
-              let senderKey = key(from),
-              let box = try? ChaChaPoly.SealedBox(combined: Data(bytes[(2 + senderLength)...])),
-              let plain = try? ChaChaPoly.open(box, using: senderKey)
+        // 1 version byte + 12-byte nonce + 16-byte tag at minimum.
+        guard bytes.count <= maxPayloadBytes, bytes.count > 29, Int(bytes[0]) == version,
+              let box = try? ChaChaPoly.SealedBox(combined: Data(bytes[1...]))
+        else { return nil }
+        guard let (from, plain) = keys.lazy.compactMap({ id, key in (try? ChaChaPoly.open(box, using: key)).map { (id, $0) } }).first
         else { return nil }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .secondsSince1970

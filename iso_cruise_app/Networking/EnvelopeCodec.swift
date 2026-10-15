@@ -19,6 +19,8 @@ nonisolated enum EnvelopeCodec {
     static let maxChatCharacters = 1_000
     static let maxSenderIdLength = 64
     static let maxMessageLength = 200
+    /// About the year 2286 in milliseconds; far above any honest sequence number.
+    static let maxSequence = 10_000_000_000_000
 
     static func encode(_ envelope: Envelope) throws -> Data {
         let encoder = JSONEncoder()
@@ -54,7 +56,8 @@ nonisolated enum EnvelopeCodec {
         guard !envelope.senderId.isEmpty, envelope.senderId.count <= maxSenderIdLength else {
             throw .invalidField("senderId")
         }
-        guard envelope.sequence >= 0 else {
+        // Sequences start at the sender's clock in milliseconds; anything wildly larger is bogus.
+        guard envelope.sequence >= 0, envelope.sequence < Self.maxSequence else {
             throw .invalidField("sequence")
         }
 
@@ -64,6 +67,11 @@ nonisolated enum EnvelopeCodec {
             if let key = hello.nudgeKey {
                 guard key.count <= 64, Data(base64Encoded: key)?.count == 32 else { throw .invalidField("nudgeKey") }
             }
+            if let nonce = hello.nonce {
+                guard nonce.count <= 32, Data(base64Encoded: nonce)?.count == 16 else { throw .invalidField("nonce") }
+            }
+        case .proof(let proof):
+            guard proof.mac.count <= 64, Data(base64Encoded: proof.mac)?.count == 32 else { throw .invalidField("proof") }
         case .chat(let chat):
             let trimmed = chat.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, chat.text.count <= maxChatCharacters else {
@@ -140,6 +148,7 @@ extension Envelope: Codable {
         case .error: payload = .error(try container.decode(ErrorPayload.self, forKey: .payload))
         case .heartbeat: payload = .heartbeat(try container.decode(EmptyPayload.self, forKey: .payload))
         case .presence: payload = .presence(try container.decode(PresencePayload.self, forKey: .payload))
+        case .proof: payload = .proof(try container.decode(ProofPayload.self, forKey: .payload))
         }
     }
 
@@ -168,6 +177,7 @@ extension Envelope: Codable {
         case .error(let value): try container.encode(value, forKey: .payload)
         case .heartbeat(let value): try container.encode(value, forKey: .payload)
         case .presence(let value): try container.encode(value, forKey: .payload)
+        case .proof(let value): try container.encode(value, forKey: .payload)
         }
     }
 }

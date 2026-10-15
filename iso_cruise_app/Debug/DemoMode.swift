@@ -166,7 +166,7 @@ final class DemoMode {
 
         func start(displayName: String) {}
         func stop() {}
-        func invite(_ peer: PeerKey) {}
+        func invite(_ peer: PeerKey) -> Bool { true }
         func respond(toInvitation invitationId: UUID, accept: Bool) {}
         func disconnectAll() {}
         func fingerprint(for peer: PeerKey) -> String? { peer.raw.uuidString }

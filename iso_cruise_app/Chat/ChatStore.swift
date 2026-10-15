@@ -6,6 +6,8 @@ import Observation
 @Observable
 final class ChatStore {
     static let maxMessages = 2_000
+    /// Most chats kept at once; the least recently active ones are dropped first.
+    static let maxConversations = 64
     /// The built-in conversation with everyone you're connected to.
     static let everyoneId = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
 
@@ -109,6 +111,7 @@ final class ChatStore {
     func directConversation(local: ConversationMember, other: ConversationMember) -> Conversation {
         let id = ConversationRef.directId(local.id, other.id)
         if let existing = conversations[id] { return existing }
+        makeRoom()
         let conversation = Conversation(id: id, kind: .direct, members: [local, other], lastActivity: .now)
         conversations[id] = conversation
         return conversation
@@ -117,6 +120,7 @@ final class ChatStore {
     /// A new group. `members` must include the local user.
     @discardableResult
     func createGroup(name: String?, members: [ConversationMember]) -> Conversation {
+        makeRoom()
         let conversation = Conversation(id: UUID(), kind: .group, name: name, members: members, lastActivity: .now)
         conversations[conversation.id] = conversation
         return conversation
@@ -133,8 +137,18 @@ final class ChatStore {
             }
         }
         let kind: Conversation.Kind = ref.kind == .direct ? .direct : .group
+        makeRoom()
         conversations[ref.id] = Conversation(id: ref.id, kind: kind, name: ref.name, members: ref.members, lastActivity: .now)
         return true
+    }
+
+    /// Keeps names in chat titles current when someone renames themselves.
+    func updateNickname(_ nickname: String, for memberId: String) {
+        for (id, conversation) in conversations where conversation.members.contains(where: { $0.id == memberId }) {
+            conversations[id]?.members = conversation.members.map {
+                $0.id == memberId ? ConversationMember(id: memberId, nickname: nickname) : $0
+            }
+        }
     }
 
     /// Removes a chat and its messages from this phone. It comes back if someone writes in it again.
@@ -166,9 +180,22 @@ final class ChatStore {
         append(Message(id: UUID(), kind: .system, senderId: "", senderName: "", text: text, date: date, isLocal: false))
     }
 
-    /// Removes everything a (now blocked) sender said.
+    /// Removes everything a (now blocked) sender said, and the unread counts for it.
     func removeMessages(from senderId: String) {
+        let removed = messages.filter { $0.kind == .text && $0.senderId == senderId }
         messages.removeAll { $0.kind == .text && $0.senderId == senderId }
+        for message in removed where unread[message.conversationId] != nil {
+            let left = unread[message.conversationId]! - 1
+            unread[message.conversationId] = left > 0 ? left : nil
+        }
+    }
+
+    /// Drops the least recently active chat when at the limit, preferring ones with nothing unread.
+    private func makeRoom() {
+        guard conversations.count >= Self.maxConversations else { return }
+        let candidates = conversations.values.filter { $0.kind != .everyone }
+            .sorted { ($0.unread(in: self) == 0 ? 0 : 1, $0.lastActivity) < ($1.unread(in: self) == 0 ? 0 : 1, $1.lastActivity) }
+        if let oldest = candidates.first { delete(oldest.id) }
     }
 
     func clear() {
@@ -182,4 +209,8 @@ final class ChatStore {
             messages.removeFirst(messages.count - Self.maxMessages)
         }
     }
+}
+
+private extension ChatStore.Conversation {
+    func unread(in store: ChatStore) -> Int { store.unread[id] ?? 0 }
 }

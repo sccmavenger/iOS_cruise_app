@@ -54,7 +54,14 @@ struct ChessView: View {
             }
         }
         .animation(.spring(duration: 0.3, bounce: 0.15), value: state)
-        .onChange(of: state) { selected = nil }
+        .onChange(of: state) {
+            selected = nil
+            // A stale promotion choice (the opponent resigned, or the board changed) can't be applied.
+            pendingPromotion = nil
+        }
+        .onChange(of: statusText) { _, text in
+            AccessibilityNotification.Announcement(lastMoveDescription.map { "\($0). \(text)" } ?? text).post()
+        }
         .confirmationDialog("Promote your pawn", isPresented: Binding(
             get: { pendingPromotion != nil },
             set: { if !$0 { pendingPromotion = nil } }
@@ -91,7 +98,7 @@ struct ChessView: View {
             case .repetition: "Draw: the same position came up 3 times"
             }
         case nil:
-            if games.pendingMoveId != nil { return "Sending move…" }
+            if games.pendingMoveId != nil { return games.pendingMoveStatus }
             let inCheck = ChessRules.isInCheck(state.turn, in: state.board)
             guard isMyTurn else {
                 return "\(games.name(for: state.playerId(for: state.turn)))'s turn\(inCheck ? " (in check)" : "")"
@@ -162,7 +169,9 @@ struct ChessView: View {
 
     private func coordinate(_ text: String, light: Bool) -> some View {
         Text(text)
-            .font(.system(size: 8, weight: .bold, design: .rounded))
+            .font(.system(.caption2, design: .rounded, weight: .bold))
+            .dynamicTypeSize(...DynamicTypeSize.xLarge)
+            .minimumScaleFactor(0.6)
             .foregroundStyle(light ? Theme.teal : Theme.foam)
             .padding(2)
             .accessibilityHidden(true)
@@ -200,13 +209,17 @@ struct ChessView: View {
         return parts.joined(separator: ", ")
     }
 
-    /// Pieces of `color` no longer on the board, most valuable first.
+    /// Pieces of `color` that were captured, most valuable first (promotions don't count).
     private func captured(of color: ChessPiece.Color) -> [ChessPiece] {
-        let starting: [(ChessPiece.Kind, Int)] = [(.queen, 1), (.rook, 2), (.bishop, 2), (.knight, 2), (.pawn, 8)]
-        return starting.flatMap { kind, count in
-            let remaining = state.board.count(where: { $0 == ChessPiece(color, kind) })
-            return Array(repeating: ChessPiece(color, kind), count: max(0, count - remaining))
-        }
+        let order: [ChessPiece.Kind] = [.queen, .rook, .bishop, .knight, .pawn]
+        return state.capturedPieces.filter { $0.color == color }
+            .sorted { (order.firstIndex(of: $0.kind) ?? 9) < (order.firstIndex(of: $1.kind) ?? 9) }
+    }
+
+    /// "Black knight to f6", for VoiceOver.
+    private var lastMoveDescription: String? {
+        guard let move = state.lastMove, let piece = state.board[move.to] else { return nil }
+        return "\(piece.color.name) \(piece.kind.rawValue) to \(ChessRules.name(of: move.to))"
     }
 }
 

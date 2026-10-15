@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Sanitizes user-chosen display names, both our own and ones received from peers.
@@ -12,6 +13,11 @@ nonisolated enum Nickname {
     /// used to visually spoof names), collapses whitespace, and truncates on grapheme
     /// boundaries to both a character limit and the `MCPeerID` byte limit.
     static func sanitize(_ raw: String) -> String? {
+        sanitize(raw, maxCharacters: maxCharacters)
+    }
+
+    /// Same cleaning with a different length limit (for example, group names).
+    static func sanitize(_ raw: String, maxCharacters: Int) -> String? {
         let filteredScalars = raw.unicodeScalars.map { scalar -> Unicode.Scalar in
             if CharacterSet.whitespacesAndNewlines.contains(scalar) { return " " }
             return scalar
@@ -40,8 +46,9 @@ nonisolated enum Nickname {
     }
 
     /// Short, stable tag derived from a peer id, shown next to names so two people
-    /// who pick the same nickname can still be told apart.
+    /// who pick the same nickname can still be told apart. It's a hash, so nobody can
+    /// pick an id that produces someone else's tag.
     static func tag(for peerId: String) -> String {
-        String(peerId.replacingOccurrences(of: "-", with: "").prefix(4)).uppercased()
+        SHA256.hash(data: Data(peerId.utf8)).prefix(2).map { String(format: "%02X", $0) }.joined()
     }
 }
