@@ -9,7 +9,10 @@ import Observation
 /// - Every inbound message is checked against the sender's role (host vs. seated player)
 ///   and the current lobby/phase before it has any effect. `SessionManager` has already
 ///   verified that the sender id belongs to the transport peer it arrived from.
-/// - If the host disappears, the match ends; there is no host migration.
+/// - If someone's connection drops mid-match (usually because their app went to the
+///   background), the match pauses for up to `awayTimeout` and resumes when they're back.
+///   The host resends the current state to a returning player. There is no host
+///   migration: if the host never returns, the match ends.
 @Observable
 final class GameCoordinator {
     struct Offer: Identifiable, Equatable {
@@ -40,6 +43,9 @@ final class GameCoordinator {
         var isFull: Bool { players.count >= maxSeats }
     }
 
+    /// How long a match waits for someone whose app went to the background.
+    static let awayTimeout: Duration = .seconds(10 * 60)
+
     let session: SessionManager
 
     private(set) var offers: [UUID: Offer] = [:]
@@ -52,20 +58,28 @@ final class GameCoordinator {
     private(set) var rematchVotes: Set<String> = []
     /// Players the host has sent a direct invitation to.
     private(set) var invitedIds: Set<String> = []
+    /// Seated players whose connection dropped mid-match; the match is paused for them.
+    private(set) var awayIds: Set<String> = []
     /// Short-lived feedback such as "That square is already taken."
     var notice: String?
+
+    /// The local player's turn just started (or they must answer a prompt).
+    @ObservationIgnored var onTurnStarted: ((GameType) -> Void)?
+    /// The match is waiting on someone who is away; the app can nudge their phone.
+    @ObservationIgnored var onNudgeNeeded: ((_ playerId: String, GameType) -> Void)?
 
     // Host-only authoritative state.
     @ObservationIgnored private var authoritative: GameEngine.State?
     @ObservationIgnored private var seenMoveIds: Set<UUID> = []
+    @ObservationIgnored private var awayTimers: [String: Task<Void, Never>] = [:]
 
     init(session: SessionManager) {
         self.session = session
         session.onGameEnvelope = { [weak self] envelope, identity in
             self?.handle(envelope, from: identity)
         }
-        session.onPeerDisconnected = { [weak self] identity in
-            self?.peerDisconnected(identity)
+        session.onPeerDisconnected = { [weak self] identity, reason in
+            self?.peerDisconnected(identity, reason: reason)
         }
         session.onPeerIdentified = { [weak self] identity in
             self?.peerIdentified(identity)
@@ -90,6 +104,16 @@ final class GameCoordinator {
         if playerId == localId { return "You" }
         if let player = lobby?.player(playerId) { return player.nickname }
         return session.identity(for: playerId)?.nickname ?? "Player"
+    }
+
+    /// It's the local player's move (or they must answer a prompt) in a running match.
+    var isAwaitingMe: Bool {
+        lobby?.phase == .playing && snapshot?.awaitingPlayerIds.contains(localId) == true
+    }
+
+    var isHostAway: Bool {
+        guard let lobby, !isHost else { return false }
+        return awayIds.contains(lobby.hostId)
     }
 
     var canStart: Bool {
@@ -166,6 +190,10 @@ final class GameCoordinator {
 
     func play(_ move: GameMove) {
         guard let lobby, lobby.phase == .playing, pendingMoveId == nil else { return }
+        guard !isHostAway else {
+            notice = "\(name(for: lobby.hostId)) stepped away. Your move can be made when they're back."
+            return
+        }
         let request = MoveRequestPayload(moveId: UUID(), baseRevision: revision, move: move)
         if isHost {
             hostHandleMove(request, from: localId)
@@ -259,7 +287,9 @@ final class GameCoordinator {
             return
         }
         if lobby.player(identity.id) != nil {
+            // A member asking again: a lost roster, or a returning player who needs catching up.
             broadcastRoster()
+            resync(identity.id)
             return
         }
         guard lobby.phase == .lobby else {
@@ -318,6 +348,13 @@ final class GameCoordinator {
             notice = "\(identity.nickname) declined your invitation."
             return
         }
+        // We asked our host to catch us up after being away, but the game is gone.
+        if var lobby, !isHost, lobby.id == reject.lobbyId, lobby.hostId == identity.id, reject.reason == .notFound {
+            lobby.phase = .ended("\(identity.nickname) isn't running this game anymore.")
+            self.lobby = lobby
+            pendingMoveId = nil
+            return
+        }
         guard joiningLobbyId == reject.lobbyId, offers[reject.lobbyId]?.host.id == identity.id else { return }
         joiningLobbyId = nil
         notice = switch reject.reason {
@@ -357,11 +394,12 @@ final class GameCoordinator {
               Self.isAddressedToMe(payload.state, localId: localId),
               payload.revision > revision // ignore stale or duplicate revisions
         else { return }
-        let wasFinished = snapshot?.isFinished ?? false
+        let previous = snapshot
         snapshot = payload.state
         revision = payload.revision
         pendingMoveId = nil
-        if wasFinished, !payload.state.isFinished { rematchVotes = [] }
+        if previous?.isFinished == true, !payload.state.isFinished { rematchVotes = [] }
+        snapshotDidChange(from: previous)
     }
 
     private func receiveEvent(_ event: GameEventPayload, sessionId: UUID?, from identity: PeerIdentity) {
@@ -398,17 +436,51 @@ final class GameCoordinator {
 
     // MARK: - Connection changes
 
-    private func peerDisconnected(_ identity: PeerIdentity) {
+    private func peerDisconnected(_ identity: PeerIdentity, reason: SessionManager.DropReason) {
         offers = offers.filter { $0.value.host.id != identity.id }
         if invitation?.host.id == identity.id { invitation = nil }
         if let joining = joiningLobbyId, offers[joining] == nil {
             joiningLobbyId = nil
         }
         invitedIds.remove(identity.id)
+        // A dropped link mid-match is usually an app switch: pause instead of ending.
+        if reason == .connectionLost, let lobby, lobby.phase == .playing, lobby.seats.contains(identity.id) {
+            markAway(identity)
+            return
+        }
         memberLeft(identity, reason: "\(identity.nickname) disconnected.")
     }
 
+    private func markAway(_ identity: PeerIdentity) {
+        awayIds.insert(identity.id)
+        // A move sent to an absent host may have been lost; let the player send it again later.
+        if identity.id == lobby?.hostId { pendingMoveId = nil }
+        awayTimers[identity.id]?.cancel()
+        awayTimers[identity.id] = Task { [weak self] in
+            try? await Task.sleep(for: Self.awayTimeout)
+            guard !Task.isCancelled else { return }
+            self?.awayTimedOut(identity)
+        }
+        requestNudgesIfNeeded()
+    }
+
+    /// Ends the match for someone who didn't come back in time. Internal for tests.
+    func awayTimedOut(_ identity: PeerIdentity) {
+        guard awayIds.remove(identity.id) != nil else { return }
+        awayTimers.removeValue(forKey: identity.id)?.cancel()
+        memberLeft(identity, reason: "\(identity.nickname) didn't come back.")
+    }
+
     private func peerIdentified(_ identity: PeerIdentity) {
+        if awayIds.remove(identity.id) != nil {
+            awayTimers.removeValue(forKey: identity.id)?.cancel()
+            if isHost {
+                resync(identity.id)
+            } else if let lobby, identity.id == lobby.hostId {
+                // Ask explicitly too, in case the host's resend arrived before we recognized it.
+                session.send(.joinRequest(LobbyRefPayload(lobbyId: lobby.id)), sessionId: lobby.id, to: [identity.id])
+            }
+        }
         // Let newly connected peers see an open lobby.
         guard let lobby, isHost, lobby.phase == .lobby, !lobby.isFull else { return }
         session.send(.lobbyOffer(offerPayload(for: lobby, invitedPlayerId: nil)), sessionId: lobby.id, to: [identity.id])
@@ -487,15 +559,53 @@ final class GameCoordinator {
     }
 
     /// Stores a new authoritative state and sends each seated player their projection.
+    /// Players who are away miss the send and get `resync` when they return.
     private func commit(_ state: GameEngine.State, revision newRevision: Int) {
         guard let lobby else { return }
+        let previous = snapshot
         authoritative = state
         revision = newRevision
         snapshot = GameEngine.projection(of: state, for: localId)
         if !state.isFinished { rematchVotes = [] }
-        for playerId in lobby.seats where playerId != localId {
-            let view = GameEngine.projection(of: state, for: playerId)
-            session.send(.stateSnapshot(StateSnapshotPayload(revision: newRevision, state: view)), sessionId: lobby.id, to: [playerId])
+        for playerId in lobby.seats where playerId != localId && !awayIds.contains(playerId) {
+            sendSnapshot(of: state, to: playerId)
+        }
+        snapshotDidChange(from: previous)
+    }
+
+    private func sendSnapshot(of state: GameEngine.State, to playerId: String) {
+        guard let lobby else { return }
+        let view = GameEngine.projection(of: state, for: playerId)
+        session.send(.stateSnapshot(StateSnapshotPayload(revision: revision, state: view)), sessionId: lobby.id, to: [playerId])
+    }
+
+    /// Catches a returning player up on everything they missed.
+    private func resync(_ playerId: String) {
+        guard isHost, let lobby, lobby.phase == .playing, lobby.seats.contains(playerId), let state = authoritative else { return }
+        sendSnapshot(of: state, to: playerId)
+        // Votes are attributed to their sender, so the host can only repeat its own.
+        if rematchVotes.contains(localId) {
+            session.send(.rematchRequest(LobbyRefPayload(lobbyId: lobby.id)), sessionId: lobby.id, to: [playerId])
+        }
+    }
+
+    // MARK: - Turn tracking
+
+    private func snapshotDidChange(from previous: GameStateSnapshot?) {
+        guard let lobby, let snapshot else { return }
+        let wasMine = previous?.awaitingPlayerIds.contains(localId) ?? false
+        if !wasMine, snapshot.awaitingPlayerIds.contains(localId) {
+            onTurnStarted?(lobby.gameType)
+        }
+        requestNudgesIfNeeded()
+    }
+
+    /// Asks the app to nudge anyone the match is waiting on who is away. Every device that
+    /// notices asks; the nudge service and the receiving phone both rate-limit.
+    private func requestNudgesIfNeeded() {
+        guard let lobby, lobby.phase == .playing, let snapshot else { return }
+        for playerId in snapshot.awaitingPlayerIds.intersection(awayIds) where playerId != localId {
+            onNudgeNeeded?(playerId, lobby.gameType)
         }
     }
 
@@ -547,6 +657,9 @@ final class GameCoordinator {
         seenMoveIds = []
         invitedIds = []
         joiningLobbyId = nil
+        awayIds = []
+        awayTimers.values.forEach { $0.cancel() }
+        awayTimers = [:]
     }
 }
 

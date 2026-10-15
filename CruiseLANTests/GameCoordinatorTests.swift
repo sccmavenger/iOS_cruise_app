@@ -21,7 +21,7 @@ final class FakeNetwork {
             let defaults = UserDefaults(suiteName: "net-\(UUID().uuidString)")!
             let profile = ProfileStore(defaults: defaults)
             profile.setNickname(name)
-            session = SessionManager(transport: transport, profile: profile, safety: SafetyStore(defaults: defaults))
+            session = SessionManager(transport: transport, profile: profile, safety: SafetyStore(defaults: defaults), trusted: TrustedPeersStore(defaults: defaults))
             games = GameCoordinator(session: session)
             transport.network = network
             transport.owner = self
@@ -241,15 +241,71 @@ struct GameCoordinatorTests {
         #expect(host.session.rejectedEnvelopeCount == 1)
     }
 
-    @Test("Host disconnecting ends the match with an explanation")
-    func hostDisconnect() throws {
+    @Test("Host dropping pauses the match; the guest can't move until the host is back")
+    func hostAwayPauses() throws {
+        _ = try startTicTacToe()
+        host.games.play(.ticTacToe(cell: 0))
+        network.disconnect(host, guest)
+        #expect(guest.games.lobby?.phase == .playing)
+        #expect(guest.games.awayIds == [host.id])
+        #expect(guest.games.isHostAway)
+
+        guest.games.play(.ticTacToe(cell: 4))
+        #expect(guest.games.notice?.contains("stepped away") == true)
+        #expect(guest.games.pendingMoveId == nil)
+
+        network.connect(host, guest)
+        #expect(guest.games.awayIds.isEmpty)
+        #expect(host.games.awayIds.isEmpty)
+        guest.games.play(.ticTacToe(cell: 4))
+        #expect(host.games.revision == 2)
+        #expect(tttState(guest) == tttState(host))
+    }
+
+    @Test("A guest who was away is caught up on moves they missed")
+    func guestCatchUp() throws {
         _ = try startTicTacToe()
         network.disconnect(host, guest)
+        #expect(host.games.awayIds == [guest.id])
+        host.games.play(.ticTacToe(cell: 0)) // X moves while O is away
+        #expect(guest.games.revision == 0)
+
+        network.connect(host, guest)
+        #expect(guest.games.revision == 1)
+        #expect(tttState(guest) == tttState(host))
+    }
+
+    @Test("Someone who doesn't come back in time ends the match")
+    func awayTimeout() throws {
+        _ = try startTicTacToe()
+        network.disconnect(host, guest)
+        guest.games.awayTimedOut(PeerIdentity(id: host.id, nickname: "Hana"))
         guard case .ended(let reason) = guest.games.lobby?.phase else {
             Issue.record("Expected ended phase")
             return
         }
         #expect(reason.contains("host"))
+        host.games.awayTimedOut(PeerIdentity(id: guest.id, nickname: "Gus"))
+        guard case .ended = host.games.lobby?.phase else {
+            Issue.record("Expected ended phase for the host")
+            return
+        }
+    }
+
+    @Test("Turn hooks: the player whose turn starts is told, and an away player is nudged")
+    func turnHooks() throws {
+        var guestTurns: [GameType] = []
+        var nudged: [String] = []
+        guest.games.onTurnStarted = { guestTurns.append($0) }
+        host.games.onNudgeNeeded = { id, _ in nudged.append(id) }
+        _ = try startTicTacToe()
+        #expect(guestTurns.isEmpty) // X (host) moves first
+        host.games.play(.ticTacToe(cell: 0))
+        #expect(guestTurns == [.ticTacToe])
+
+        // The guest steps away on their turn: the host asks for a nudge.
+        network.disconnect(host, guest)
+        #expect(nudged == [guest.id])
     }
 
     @Test("Guest leaving ends the match for the host")

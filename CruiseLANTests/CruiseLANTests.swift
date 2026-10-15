@@ -254,7 +254,7 @@ struct SessionManagerTests {
         let profile = ProfileStore(defaults: defaults)
         profile.setNickname("Local")
         safety = SafetyStore(defaults: defaults)
-        session = SessionManager(transport: transport, profile: profile, safety: safety)
+        session = SessionManager(transport: transport, profile: profile, safety: safety, trusted: TrustedPeersStore(defaults: defaults))
     }
 
     private func encode(_ payload: Envelope.Payload, sender: String? = nil, sequence: Int, id: UUID = UUID()) -> Data {
@@ -457,6 +457,73 @@ struct SessionManagerTests {
         session.handle(.peerStateChanged(peerKey, .connected))
         session.handle(.received(encode(.hello(HelloPayload(nickname: "b1tch", protocolVersion: 1)), sequence: 1), from: peerKey))
         #expect(session.connectedIdentities.first?.nickname == "Player")
+    }
+
+    @Test("A peer this user accepted reconnects automatically after dropping")
+    func trustedReconnect() {
+        connectAndHello()
+        session.handle(.peerStateChanged(peerKey, .notConnected))
+        // "Local" sorts before "Remote", so this side invites; the other side would wait.
+        session.handle(.peerFound(peerKey, displayName: "Remote"))
+        #expect(transport.invited == [peerKey])
+
+        // Their invitation is accepted without asking again.
+        let invitationId = UUID()
+        session.handle(.invitationReceived(invitationId: invitationId, from: peerKey, displayName: "Remote"))
+        #expect(session.invitations.isEmpty)
+        #expect(transport.responses.last?.0 == invitationId)
+        #expect(transport.responses.last?.1 == true)
+    }
+
+    @Test("Strangers still need approval, and Disconnect from Everyone stops auto-reconnect")
+    func untrustedNeedsApproval() {
+        let stranger = PeerKey()
+        session.handle(.invitationReceived(invitationId: UUID(), from: stranger, displayName: "Stranger"))
+        #expect(session.invitations.count == 1)
+
+        connectAndHello()
+        session.disconnectAll()
+        session.handle(.peerStateChanged(peerKey, .notConnected))
+        session.handle(.peerFound(peerKey, displayName: "Remote"))
+        #expect(transport.invited.isEmpty)
+    }
+
+    @Test("Messages sent while someone is away are held and delivered when they're back")
+    func outboxForAway() throws {
+        var queuedFor: [String] = []
+        session.onChatQueuedForAway = { queuedFor = $0 }
+        connectAndHello()
+        session.handle(.peerStateChanged(peerKey, .notConnected))
+        let before = transport.sent.count
+
+        #expect(session.sendChat("see you at dinner") == .sent)
+        #expect(transport.sent.count == before)
+        #expect(queuedFor == [remoteId])
+        #expect(session.chat.messages.last?.text == "see you at dinner")
+
+        // They come back: new connection, new hello.
+        session.handle(.peerStateChanged(peerKey, .connected))
+        session.handle(.received(encode(.hello(HelloPayload(nickname: "Remote", protocolVersion: 1)), sequence: 2), from: peerKey))
+        let delivered = transport.sentEnvelopes().filter { $0.payload == .chat(ChatPayload(text: "see you at dinner")) }
+        #expect(delivered.count == 1)
+        #expect(session.chat.messages.contains { $0.text.contains("is back") })
+    }
+
+    @Test("Going to the background drops peers quietly and reports them as connection losses")
+    func suspendAndResume() {
+        var drops: [SessionManager.DropReason] = []
+        session.onPeerDisconnected = { _, reason in drops.append(reason) }
+        session.start()
+        connectAndHello()
+        session.handle(.started)
+        session.suspend()
+        #expect(drops == [.connectionLost])
+        #expect(session.status == .idle)
+        #expect(session.connectedPeers.isEmpty)
+        #expect(session.chat.messages.last?.text.contains("disconnected") != true)
+        #expect(session.awayIdentityIds == [remoteId])
+        session.resume()
+        #expect(transport.startedName == "Local")
     }
 
     @Test("Invitations are surfaced and answered")

@@ -49,6 +49,14 @@ final class SessionManager {
         case filtered(ContentFilter.Reason)
     }
 
+    /// Why a connected peer went away.
+    enum DropReason: Equatable {
+        /// The link dropped: out of range, or their app went to the background.
+        case connectionLost
+        /// This user blocked them.
+        case blocked
+    }
+
     enum Status: Equatable {
         case idle
         case running(since: Date)
@@ -59,6 +67,11 @@ final class SessionManager {
     static let rateLimit = 40
     static let rateWindow: TimeInterval = 5
     private static let seenIdCapacity = 2_000
+    /// Messages held for one away person; older ones are dropped.
+    static let outboxLimit = 30
+    static let outboxLifetime: TimeInterval = 15 * 60
+    /// If the peer that should invite (see `reconnect`) hasn't after this long, invite anyway.
+    static let reconnectFallback: Duration = .seconds(6)
     private static let logger = Logger(subsystem: "com.dannyguillory.cruiselan", category: "session")
 
     /// Random per-launch identifier announced to peers. Not tied to the device or the user.
@@ -67,17 +80,25 @@ final class SessionManager {
     let profile: ProfileStore
     let safety: SafetyStore
     let filter: ContentFilter
+    let trusted: TrustedPeersStore
 
     private(set) var peers: [PeerKey: RemotePeer] = [:]
     private(set) var invitations: [Invitation] = []
     private(set) var status: Status = .idle
     /// Count of inbound envelopes dropped by validation, surfaced for diagnostics.
     private(set) var rejectedEnvelopeCount = 0
+    /// Everyone who completed the handshake since launch, even if they've since dropped.
+    /// Used to recognize people who are away (app in the background) and may be nudged.
+    private(set) var knownIdentities: [String: PeerIdentity] = [:]
 
     /// Game-layer hooks, installed by `GameCoordinator`.
     @ObservationIgnored var onGameEnvelope: ((Envelope, PeerIdentity) -> Void)?
-    @ObservationIgnored var onPeerDisconnected: ((PeerIdentity) -> Void)?
+    @ObservationIgnored var onPeerDisconnected: ((PeerIdentity, DropReason) -> Void)?
     @ObservationIgnored var onPeerIdentified: ((PeerIdentity) -> Void)?
+    /// A chat message from someone else passed the safety filter and was added to the chat.
+    @ObservationIgnored var onChatReceived: ((PeerIdentity, String) -> Void)?
+    /// The local user sent a chat message while these known people were away.
+    @ObservationIgnored var onChatQueuedForAway: (([String]) -> Void)?
 
     @ObservationIgnored private let transport: any PeerTransport
     @ObservationIgnored private var eventTask: Task<Void, Never>?
@@ -88,6 +109,8 @@ final class SessionManager {
     @ObservationIgnored private var recentArrivals: [PeerKey: [Date]] = [:]
     /// Filtered messages received per sender this session; drives auto-blocking.
     @ObservationIgnored private var filterStrikes: [String: Int] = [:]
+    /// Chat this user sent while someone they'd connected with was away, by identity id.
+    @ObservationIgnored private var outbox: [String: [(text: String, date: Date)]] = [:]
     @ObservationIgnored private let now: () -> Date
 
     init(
@@ -95,12 +118,14 @@ final class SessionManager {
         profile: ProfileStore,
         safety: SafetyStore = SafetyStore(),
         filter: ContentFilter = .shared,
+        trusted: TrustedPeersStore = TrustedPeersStore(),
         now: @escaping () -> Date = { .now }
     ) {
         self.transport = transport
         self.profile = profile
         self.safety = safety
         self.filter = filter
+        self.trusted = trusted
         self.now = now
         eventTask = Task { [weak self, events = transport.events] in
             for await event in events {
@@ -129,6 +154,15 @@ final class SessionManager {
         peers.values.first { $0.identity?.id == id }?.identity
     }
 
+    func isConnected(_ identityId: String) -> Bool {
+        connectedIdentities.contains { $0.id == identityId }
+    }
+
+    /// People this user has connected with since launch who aren't connected right now.
+    var awayIdentityIds: [String] {
+        knownIdentities.keys.filter { !isConnected($0) }.sorted()
+    }
+
     var localIdentity: PeerIdentity {
         PeerIdentity(id: localId, nickname: profile.nickname ?? "Me")
     }
@@ -147,6 +181,22 @@ final class SessionManager {
         peers.removeAll()
         invitations.removeAll()
         status = .idle
+    }
+
+    /// iOS ends peer-to-peer sessions when an app goes to the background. Tear down
+    /// cleanly so the game layer can mark people as away, then reconnect in `resume()`.
+    func suspend() {
+        guard status != .idle else { return }
+        for (key, peer) in peers where peer.connection == .connected {
+            handleStateChange(key: key, state: .notConnected, announce: false)
+        }
+        stop()
+    }
+
+    /// Restarts discovery after the app returns to the foreground; trusted peers reconnect on their own.
+    func resume() {
+        guard status == .idle else { return }
+        start()
     }
 
     /// Restarts the transport so the new nickname is advertised.
@@ -170,6 +220,8 @@ final class SessionManager {
     }
 
     func disconnectAll() {
+        // An explicit disconnect also stops automatic reconnection.
+        trusted.forgetAll()
         transport.disconnectAll()
     }
 
@@ -179,9 +231,27 @@ final class SessionManager {
         let text = String(rawText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(EnvelopeCodec.maxChatCharacters))
         guard !text.isEmpty else { return .empty }
         if case .blocked(let reason) = filter.check(text) { return .filtered(reason) }
-        guard let envelope = send(.chat(ChatPayload(text: text))) else { return .noRecipients }
-        chat.appendText(id: envelope.id, senderId: localId, senderName: localIdentity.nickname, text: text, isLocal: true)
+        let away = awayIdentityIds
+        let envelope = send(.chat(ChatPayload(text: text)))
+        guard envelope != nil || !away.isEmpty else { return .noRecipients }
+        // Hold a copy for people who are away; they get it when they reconnect.
+        let cutoff = now().addingTimeInterval(-Self.outboxLifetime)
+        for id in away {
+            var held = (outbox[id] ?? []).filter { $0.date > cutoff }
+            held.append((text, now()))
+            outbox[id] = Array(held.suffix(Self.outboxLimit))
+        }
+        if !away.isEmpty { onChatQueuedForAway?(away) }
+        chat.appendText(id: envelope?.id ?? UUID(), senderId: localId, senderName: localIdentity.nickname, text: text, isLocal: true)
         return .sent
+    }
+
+    private func deliverOutbox(to identity: PeerIdentity) {
+        guard let held = outbox.removeValue(forKey: identity.id) else { return }
+        let cutoff = now().addingTimeInterval(-Self.outboxLifetime)
+        for message in held where message.date > cutoff {
+            send(.chat(ChatPayload(text: message.text)), to: [identity.id])
+        }
     }
 
     // MARK: - Blocking
@@ -194,13 +264,16 @@ final class SessionManager {
         let name = peer.identity?.labeledName ?? peer.displayName
         if let fingerprint = transport.fingerprint(for: key) {
             safety.block(fingerprint: fingerprint, name: name)
+            trusted.forget(fingerprint)
         }
         peer.isBlocked = true
         peers[key] = peer
         invitations.removeAll { $0.from == key }
         if let identity = peer.identity {
+            knownIdentities[identity.id] = nil
+            outbox[identity.id] = nil
             chat.removeMessages(from: identity.id)
-            onPeerDisconnected?(identity)
+            onPeerDisconnected?(identity, .blocked)
         }
         chat.appendSystem("You blocked \(name). You won't see their messages or invitations.")
     }
@@ -275,6 +348,9 @@ final class SessionManager {
             peer.isNearby = true
             peer.isBlocked = peer.isBlocked || safety.isBlocked(transport.fingerprint(for: key))
             peers[key] = peer
+            if !peer.isBlocked, peer.connection == .notConnected, trusted.isTrusted(transport.fingerprint(for: key)) {
+                reconnect(key, peerName: rawName)
+            }
 
         case .peerLost(let key):
             guard var peer = peers[key] else { return }
@@ -290,6 +366,11 @@ final class SessionManager {
                 transport.respond(toInvitation: invitationId, accept: false)
                 return
             }
+            // Someone this user already accepted is coming back: no need to ask again.
+            if trusted.isTrusted(transport.fingerprint(for: key)) {
+                transport.respond(toInvitation: invitationId, accept: true)
+                return
+            }
             invitations.append(Invitation(id: invitationId, from: key, displayName: filter.safeNickname(rawName)))
 
         case .invitationExpired(let invitationId):
@@ -303,7 +384,24 @@ final class SessionManager {
         }
     }
 
-    private func handleStateChange(key: PeerKey, state: PeerConnectionState) {
+    /// Re-invites a trusted peer. Only one side invites, chosen by comparing nicknames, so
+    /// the two invitations don't collide; the other side accepts automatically. If the
+    /// expected inviter doesn't (for example, it hasn't spotted us yet), invite after a pause.
+    private func reconnect(_ key: PeerKey, peerName: String) {
+        let mine = profile.nickname ?? ""
+        if mine < peerName {
+            invite(key)
+            return
+        }
+        let delay: Duration = mine == peerName ? .milliseconds(Int.random(in: 300...2_000)) : Self.reconnectFallback
+        Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard let self, let peer = self.peers[key], peer.connection == .notConnected, peer.isNearby, !peer.isBlocked else { return }
+            self.invite(key)
+        }
+    }
+
+    private func handleStateChange(key: PeerKey, state: PeerConnectionState, announce: Bool = true) {
         var peer = peers[key] ?? RemotePeer(key: key, displayName: "Unknown", connection: state, isNearby: false, isInvited: false)
         let previous = peer.connection
         peer.connection = state
@@ -318,8 +416,8 @@ final class SessionManager {
 
         if state == .notConnected, previous == .connected {
             if let identity = peer.identity {
-                chat.appendSystem("\(identity.labeledName) disconnected")
-                onPeerDisconnected?(identity)
+                if announce { chat.appendSystem("\(identity.labeledName) disconnected") }
+                onPeerDisconnected?(identity, .connectionLost)
             }
             peer.identity = nil
             peer.didDisconnect = true
@@ -384,7 +482,11 @@ final class SessionManager {
             let identity = PeerIdentity(id: envelope.senderId, nickname: filter.safeNickname(nickname))
             peer.identity = identity
             peers[key] = peer
-            chat.appendSystem("\(identity.labeledName) connected")
+            let returning = knownIdentities[identity.id] != nil
+            knownIdentities[identity.id] = identity
+            trusted.trust(transport.fingerprint(for: key))
+            chat.appendSystem(returning ? "\(identity.labeledName) is back" : "\(identity.labeledName) connected")
+            deliverOutbox(to: identity)
             onPeerIdentified?(identity)
             return
         }
@@ -408,6 +510,7 @@ final class SessionManager {
                 return
             }
             chat.appendText(id: envelope.id, senderId: identity.id, senderName: identity.nickname, text: chatPayload.text, isLocal: false)
+            onChatReceived?(identity, chatPayload.text)
         case .heartbeat:
             break
         case .hello:

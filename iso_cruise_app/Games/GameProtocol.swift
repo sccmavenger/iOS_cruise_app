@@ -60,6 +60,18 @@ nonisolated enum GameStateSnapshot: Codable, Equatable, Sendable {
         }
     }
 
+    /// Players the game is waiting on right now: whoever's turn it is, or whoever must
+    /// answer a Wild Draw Four. Empty once the round is over.
+    var awaitingPlayerIds: Set<String> {
+        switch self {
+        case .ticTacToe(let state): state.outcome == nil ? [state.playerId(for: state.turn)] : []
+        case .connectFour(let state): state.outcome == nil ? [state.playerId(for: state.turn)] : []
+        case .colorMatch(let snapshot): snapshot.roundResult == nil ? [snapshot.drawFourTarget ?? snapshot.currentPlayer] : []
+        case .checkers(let state): state.outcome == nil ? [state.playerId(for: state.turn)] : []
+        case .chess(let state): state.outcome == nil ? [state.playerId(for: state.turn)] : []
+        }
+    }
+
     /// The round is over and players can vote for a rematch / next round.
     var isFinished: Bool {
         switch self {

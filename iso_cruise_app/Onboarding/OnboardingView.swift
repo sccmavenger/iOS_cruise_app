@@ -41,7 +41,7 @@ struct OnboardingView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     FeatureRow(symbol: "wifi.slash", title: "Works offline", detail: "Connects directly to nearby iPhones over Wi-Fi or Bluetooth.")
                     FeatureRow(symbol: "lock.fill", title: "Private by design", detail: "Encrypted links, no accounts, no cloud. Messages vanish when you quit.")
-                    FeatureRow(symbol: "gamecontroller.fill", title: "Play together", detail: "Tic-Tac-Toe, Connect Four, and Color Match.")
+                    FeatureRow(symbol: "gamecontroller.fill", title: "Play together", detail: "Chess, Checkers, Color Match, Connect Four, and Tic-Tac-Toe.")
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -66,7 +66,7 @@ struct OnboardingView: View {
                     }
                 }
 
-                Text("Next, iOS will ask to find devices on your local network. CruiseLAN needs this to discover nearby people.")
+                Text("Next, iOS will ask about your local network, Bluetooth, and notifications. CruiseLAN uses them to find nearby people and to let you know about new messages and your turn, even while you're in another app.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

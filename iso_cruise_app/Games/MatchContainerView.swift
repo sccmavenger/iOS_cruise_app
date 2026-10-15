@@ -3,6 +3,8 @@ import SwiftUI
 /// Full-screen container for the current lobby and its match.
 struct MatchContainerView: View {
     @Environment(GameCoordinator.self) private var games
+    @Environment(AppState.self) private var app
+    @Environment(NotificationManager.self) private var notifications
     @State private var confirmLeave = false
 
     var body: some View {
@@ -23,6 +25,17 @@ struct MatchContainerView: View {
             .navigationTitle(games.lobby?.gameType.displayName ?? "")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    // Tucks the game away so the player can chat while waiting for their turn.
+                    Button {
+                        app.selectedTab = .chat
+                        app.isMatchMinimized = true
+                    } label: {
+                        Label(notifications.unreadChatCount > 0 ? "Chat (\(notifications.unreadChatCount))" : "Chat", systemImage: "bubble.left.and.bubble.right")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .accessibilityHint("Shows the chat. The game keeps going and you can come back anytime.")
+                }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Leave", role: .destructive) {
                         if case .ended = games.lobby?.phase {
@@ -186,6 +199,9 @@ struct MatchView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
+                if !games.awayIds.isEmpty {
+                    AwayBanner(names: games.awayIds.sorted().map(games.name(for:)))
+                }
                 switch games.snapshot {
                 case .ticTacToe(let state):
                     TicTacToeView(state: state)
@@ -210,6 +226,30 @@ struct MatchView: View {
                 .opacity(0.35)
                 .ignoresSafeArea()
         }
+    }
+}
+
+/// Shown while someone's app is in the background: the match is paused, not over.
+struct AwayBanner: View {
+    let names: [String]
+
+    var body: some View {
+        Label {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(names.formatted(.list(type: .and))) stepped away")
+                    .font(.subheadline.weight(.semibold))
+                Text("The game is paused. Their phone gets a nudge when it's their turn.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } icon: {
+            Image(systemName: "pause.circle.fill")
+                .foregroundStyle(Theme.sunset)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(.regular, in: .rect(cornerRadius: 16))
+        .accessibilityElement(children: .combine)
     }
 }
 

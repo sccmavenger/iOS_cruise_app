@@ -2,10 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>CruiseLAN uses Bluetooth so nearby friends can nudge your phone when it's your turn or they send a message, even while you're in another app.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_cruiselan._tcp</string>
 		<string>_cruiselan._udp</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-peripheral</string>
 	</array>
 </dict>
 </plist>
