@@ -49,11 +49,17 @@ final class SafetyStore {
     }
 }
 
-/// Where safety reports are sent. Reports open the Mail app with a pre-filled message;
-/// nothing is sent automatically, and there is no CruiseLAN server.
+/// Where safety reports and support requests go. Reports open the Mail app with a
+/// pre-filled message; nothing is sent automatically, and there is no CruiseLAN server.
+/// Mail queues the message until the phone is back online (for example, after the cruise).
+///
+/// App Review Guideline 1.2 requires published contact information for apps with chat;
+/// these must match the Support URL and contact email entered in App Store Connect.
 enum SafetyConfig {
-    /// TODO: Set the published support/safety contact address before external TestFlight or App Store release.
+    /// Published safety and support contact. Rows that use it are hidden while it's `nil`.
     static let reportEmail: String? = nil
+    static let supportURL: URL? = nil
+    static let privacyPolicyURL: URL? = nil
     /// Filtered messages from one person in a session before they're blocked automatically.
     static let autoBlockThreshold = 3
 }

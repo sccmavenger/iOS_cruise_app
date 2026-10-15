@@ -18,6 +18,8 @@ struct ReportView: View {
     @Environment(\.openURL) private var openURL
     @State private var reason = Reason.inappropriate
     @State private var didReport = false
+    /// Mail isn't set up on this phone, so show the address to write to instead.
+    @State private var mailUnavailable = false
 
     enum Reason: String, CaseIterable, Identifiable {
         case inappropriate = "Bad words or inappropriate content"
@@ -39,6 +41,14 @@ struct ReportView: View {
                         Text("You won't see their messages or invitations anymore.")
                         Text("If someone made you feel unsafe or uncomfortable, tell a parent or a crew member right away.")
                             .fontWeight(.semibold)
+                    }
+                    if mailUnavailable, let email = SafetyConfig.reportEmail {
+                        Section("Send the report") {
+                            Text("Mail isn't set up on this phone. A parent can email the report to:")
+                            Text(email)
+                                .textSelection(.enabled)
+                                .fontWeight(.semibold)
+                        }
                     }
                 } else {
                     Section {
@@ -84,7 +94,9 @@ struct ReportView: View {
         session.block(identityId: target.identityId)
         didReport = true
         if let email = SafetyConfig.reportEmail, let url = Self.mailURL(to: email, body: body) {
-            openURL(url)
+            openURL(url) { accepted in
+                mailUnavailable = !accepted
+            }
         }
     }
 

@@ -52,7 +52,23 @@ struct ProfileView: View {
 
                 Section("Good to know") {
                     TipRow(symbol: "antenna.radiowaves.left.and.right", text: "CruiseLAN reaches people nearby. It is not a ship-wide network, and some Wi-Fi networks block it.")
-                    TipRow(symbol: "moon.zzz", text: "Connections pause when CruiseLAN goes to the background.")
+                    TipRow(symbol: "moon.zzz", text: "When you switch apps, games pause for up to 10 minutes. Friends nearby can nudge your phone over Bluetooth when it's your turn or they send a message.")
+                }
+
+                if SafetyConfig.reportEmail != nil || SafetyConfig.supportURL != nil || SafetyConfig.privacyPolicyURL != nil {
+                    Section("Help") {
+                        if let email = SafetyConfig.reportEmail, let url = URL(string: "mailto:\(email)") {
+                            Link(destination: url) {
+                                LabeledContent("Contact Us", value: email)
+                            }
+                        }
+                        if let supportURL = SafetyConfig.supportURL {
+                            Link("Support", destination: supportURL)
+                        }
+                        if let privacyPolicyURL = SafetyConfig.privacyPolicyURL {
+                            Link("Privacy Policy", destination: privacyPolicyURL)
+                        }
+                    }
                 }
 
                 Section {

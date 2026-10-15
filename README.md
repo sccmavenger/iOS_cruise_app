@@ -10,14 +10,15 @@ Offline, nearby chat and turn-based games for iPhone. Phones talk directly to ea
 |---|---|
 | M1 — Offline chat | Done |
 | M2 — Games tab, lobby, Tic-Tac-Toe | Done |
-| M3 — Connect Four | Not started ("Coming soon" tile) |
-| M4 — Color Match | Not started ("Coming soon" tile) |
-| M5 — Hardening and handoff | Partial (see TEST-REPORT.md) |
+| M3 — Connect Four, Color Match | Done |
+| M4 — Checkers, Chess | Done |
+| M5 — Notifications, away-and-back matches, Bluetooth nudges | Done |
+| App Store submission | Prepared. See [docs/app-store/SUBMISSION.md](docs/app-store/SUBMISSION.md) |
 
 ## Requirements
 
 - Xcode 27 (built and tested with 27.0, build 27A266a)
-- iOS **26.0** or later, iPhone only. Chosen as the oldest OS with the Liquid Glass APIs the UI uses, so testers who haven't moved to iOS 27 can still install it.
+- iOS **26.1** or later, iPhone only. 26.1 adds `tabViewBottomAccessory(isEnabled:)`, used for the "Back to game" bar.
 - Team `CB4AAVWWUD`, bundle ID `com.dannyguillory.cruiselan`
 
 ## Build and test
@@ -73,7 +74,7 @@ If nobody appears after about 20 seconds, the People screen shows troubleshootin
 - **Block and Report:** touch and hold a message, or swipe a connected person in People.
   - Blocking hides that person's messages, lobbies, and invitations, and is remembered by device fingerprint across launches.
   - Three filtered messages from someone in one session blocks them automatically.
-  - Report always blocks. It opens a pre-filled email once `SafetyConfig.reportEmail` is set. **That address must be set before external testing or App Store submission** (Guideline 1.2 requires published contact info).
+  - Report always blocks. It opens a pre-filled email once `SafetyConfig.reportEmail` is set. If Mail isn't set up, it shows the address instead. **That address must be set before App Store submission** (Guideline 1.2 requires published contact info). See `docs/app-store/SUBMISSION.md`.
 - **Limitation:** MultipeerConnectivity can't drop a single peer from a session. A blocked person stays linked at the transport level, but nothing they send is shown and nothing is sent to them.
 
 ## Known limitations

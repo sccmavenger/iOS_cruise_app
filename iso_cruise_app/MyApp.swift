@@ -8,10 +8,23 @@ import SwiftUI
     @State private var appState = AppState()
     @State private var notifications: NotificationManager
     @State private var nudges: NudgeService
+    #if DEBUG
+    /// Scripted screenshot scene, when launched with `-CruiseLANDemo <scene>`.
+    @State private var demo: DemoMode?
+    #endif
 
     init() {
-        let profile = ProfileStore()
-        let session = SessionManager(transport: MultipeerTransport(), profile: profile, safety: SafetyStore())
+        var profile = ProfileStore()
+        var transport: any PeerTransport = MultipeerTransport()
+        #if DEBUG
+        let demo = DemoMode.requestedScene.map(DemoMode.init(scene:))
+        if let demo {
+            profile = demo.profile
+            transport = demo.transport
+        }
+        _demo = State(initialValue: demo)
+        #endif
+        let session = SessionManager(transport: transport, profile: profile, safety: SafetyStore())
         let games = GameCoordinator(session: session)
         let notifications = NotificationManager()
         let nudges = NudgeService()
@@ -32,6 +45,12 @@ import SwiftUI
                 .environment(appState)
                 .environment(notifications)
                 .task(id: profile.nickname) {
+                    #if DEBUG
+                    if let demo {
+                        await demo.run(session: session, games: games, app: appState)
+                        return
+                    }
+                    #endif
                     // Ask for notifications and Bluetooth only after onboarding, when they make sense.
                     guard profile.nickname != nil else { return }
                     nudges.start(localId: session.localId)
