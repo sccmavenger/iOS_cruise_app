@@ -335,6 +335,82 @@ struct GameCoordinatorTests {
         #expect(guest.games.offers(for: .ticTacToe).isEmpty)
     }
 
+    @Test("Connect Four plays over the network with identical boards")
+    func connectFourOverNetwork() throws {
+        host.games.hostLobby(.connectFour)
+        let offer = try #require(guest.games.offers(for: .connectFour).first)
+        guest.games.join(offer)
+        guest.games.setReady(true)
+        host.games.startGame()
+        for column in [0, 1, 0, 1, 0, 1] {
+            guard case .connectFour(let state) = host.games.snapshot else { Issue.record("no state"); return }
+            let mover = state.playerId(for: state.turn) == host.id ? host : guest
+            mover.games.play(.connectFour(column: column))
+        }
+        host.games.play(.connectFour(column: 0))
+        guard case .connectFour(let hostState) = host.games.snapshot, case .connectFour(let guestState) = guest.games.snapshot else {
+            Issue.record("missing snapshots"); return
+        }
+        #expect(hostState == guestState)
+        guard case .win(.red, _) = hostState.outcome else { Issue.record("expected red win"); return }
+    }
+
+    @Test("Color Match with 3 players: each device gets only its own hand")
+    func colorMatchPrivateHands() throws {
+        let third = network.addNode("Tess")
+        network.connect(third, host)
+        network.connect(third, guest)
+        host.games.hostLobby(.colorMatch)
+        for node in [guest, third] {
+            let offer = try #require(node.games.offers(for: .colorMatch).first)
+            node.games.join(offer)
+            node.games.setReady(true)
+        }
+        #expect(host.games.lobby?.players.count == 3)
+        host.games.startGame()
+
+        var hands: [String: [Card]] = [:]
+        for node in [host, guest, third] {
+            guard case .colorMatch(let table) = node.games.snapshot else { Issue.record("\(node.name) has no table"); return }
+            #expect(table.viewer == node.id)
+            #expect(table.hand.count == 7)
+            #expect(table.cardCounts.values.allSatisfy { $0 == 7 })
+            hands[node.id] = table.hand
+        }
+        // Hands are disjoint, so nobody received anyone else's cards.
+        let allIds = hands.values.flatMap { $0.map(\.id) }
+        #expect(Set(allIds).count == 21)
+
+        // Every snapshot on the wire was addressed to the player it describes.
+        for entry in network.log {
+            if case .stateSnapshot(let payload) = entry.envelope.payload, case .colorMatch(let table) = payload.state {
+                let recipient = network.nodes.first { $0.name == entry.to }!
+                #expect(table.viewer == recipient.id)
+            }
+        }
+    }
+
+    @Test("Color Match: a client's legal play is applied by the host and seen by everyone")
+    func colorMatchPlayOverNetwork() throws {
+        host.games.hostLobby(.colorMatch)
+        let offer = try #require(guest.games.offers(for: .colorMatch).first)
+        guest.games.join(offer)
+        guest.games.setReady(true)
+        host.games.startGame()
+
+        // Whoever's turn it is draws a card; both devices see the draw pile shrink.
+        guard case .colorMatch(let before) = host.games.snapshot else { Issue.record("no table"); return }
+        let mover = before.currentPlayer == host.id ? host : guest
+        mover.games.play(.colorMatch(.draw))
+        guard case .colorMatch(let hostAfter) = host.games.snapshot, case .colorMatch(let guestAfter) = guest.games.snapshot else {
+            Issue.record("missing tables"); return
+        }
+        #expect(hostAfter.drawPileCount == before.drawPileCount - 1)
+        #expect(guestAfter.drawPileCount == hostAfter.drawPileCount)
+        #expect(hostAfter.cardCounts == guestAfter.cardCounts)
+        #expect(guestAfter.cardCounts[mover.id] == 8)
+    }
+
     @Test("Public broadcasts contain only lobby metadata")
     func noUnexpectedBroadcastContent() throws {
         _ = try startTicTacToe()

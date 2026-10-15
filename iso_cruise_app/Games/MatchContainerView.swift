@@ -189,6 +189,10 @@ struct MatchView: View {
                 switch games.snapshot {
                 case .ticTacToe(let state):
                     TicTacToeView(state: state)
+                case .connectFour(let state):
+                    ConnectFourView(state: state)
+                case .colorMatch(let table):
+                    ColorMatchView(table: table)
                 case nil:
                     ProgressView("Waiting for the host…")
                         .padding(.top, 80)
@@ -229,6 +233,8 @@ struct MatchEndedView: View {
 
 /// Shared footer for finished rounds: rematch voting.
 struct RematchControls: View {
+    var title = "Rematch"
+    var waitingTitle = "Waiting for opponent…"
     @Environment(GameCoordinator.self) private var games
 
     var body: some View {
@@ -238,14 +244,14 @@ struct RematchControls: View {
             Button {
                 games.requestRematch()
             } label: {
-                Label(voted ? "Waiting for opponent…" : "Rematch", systemImage: "arrow.clockwise")
+                Label(voted ? waitingTitle : title, systemImage: "arrow.clockwise")
                     .font(.headline)
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.glassProminent)
             .disabled(voted)
             if !othersWaiting.isEmpty, !voted {
-                Text("\(othersWaiting.map(games.name(for:)).joined(separator: ", ")) wants a rematch!")
+                Text("\(othersWaiting.map(games.name(for:)).joined(separator: ", ")) \(othersWaiting.count == 1 ? "is" : "are") ready to go again!")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }

@@ -56,7 +56,7 @@ final class GameCoordinator {
     var notice: String?
 
     // Host-only authoritative state.
-    @ObservationIgnored private var authoritative: GameStateSnapshot?
+    @ObservationIgnored private var authoritative: GameEngine.State?
     @ObservationIgnored private var seenMoveIds: Set<UUID> = []
 
     init(session: SessionManager) {
@@ -354,6 +354,7 @@ final class GameCoordinator {
               lobby.phase == .playing,
               payload.state.gameType == lobby.gameType,
               Set(payload.state.playerIds) == Set(lobby.seats),
+              Self.isAddressedToMe(payload.state, localId: localId),
               payload.revision > revision // ignore stale or duplicate revisions
         else { return }
         let wasFinished = snapshot?.isFinished ?? false
@@ -455,7 +456,9 @@ final class GameCoordinator {
         guard isHost, let lobby, lobby.phase == .playing, let state = authoritative, lobby.seats.contains(playerId) else { return }
         // Exactly-once: a repeated move id is dropped silently.
         guard seenMoveIds.insert(request.moveId).inserted else { return }
-        guard request.baseRevision == revision else {
+        // Call One!/Catch! race against turns by design, so they skip the revision check;
+        // the host applies whichever arrives first.
+        guard request.baseRevision == revision || GameEngine.isTurnIndependent(request.move) else {
             return rejectMove(MoveErrorMessage.staleBoard, to: playerId)
         }
         do {
@@ -484,7 +487,7 @@ final class GameCoordinator {
     }
 
     /// Stores a new authoritative state and sends each seated player their projection.
-    private func commit(_ state: GameStateSnapshot, revision newRevision: Int) {
+    private func commit(_ state: GameEngine.State, revision newRevision: Int) {
         guard let lobby else { return }
         authoritative = state
         revision = newRevision
@@ -544,6 +547,14 @@ final class GameCoordinator {
         seenMoveIds = []
         invitedIds = []
         joiningLobbyId = nil
+    }
+}
+
+extension GameCoordinator {
+    /// Hidden-information snapshots must be this player's own view.
+    static func isAddressedToMe(_ snapshot: GameStateSnapshot, localId: String) -> Bool {
+        if case .colorMatch(let table) = snapshot { return table.viewer == localId }
+        return true
     }
 }
 

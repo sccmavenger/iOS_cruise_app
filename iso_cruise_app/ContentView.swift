@@ -41,6 +41,9 @@ struct ContentView: View {
 
 struct MainTabView: View {
     @Environment(GameCoordinator.self) private var games
+    /// Driven from the lobby state with a short delay so any open sheet can finish
+    /// dismissing first; UIKit drops a presentation that starts while another is closing.
+    @State private var showMatch = false
 
     var body: some View {
         TabView {
@@ -52,11 +55,19 @@ struct MainTabView: View {
             }
         }
         // Presented from the root so a match opens no matter which tab is showing.
-        .fullScreenCover(isPresented: Binding(
-            get: { games.lobby != nil },
-            set: { _ in }
-        )) {
+        .fullScreenCover(isPresented: $showMatch) {
             MatchContainerView()
+        }
+        .onChange(of: games.lobby != nil) { _, active in
+            if active {
+                presentMatchSoon()
+            } else {
+                showMatch = false
+            }
+        }
+        .onChange(of: showMatch) { _, showing in
+            // If the system dropped the cover while a match is still active, bring it back.
+            if !showing, games.lobby != nil { presentMatchSoon() }
         }
         .alert(
             gameInvitationTitle,
@@ -70,6 +81,13 @@ struct MainTabView: View {
             Button("Decline", role: .cancel) { games.respondToInvitation(accept: false) }
         } message: { invitation in
             Text("\(invitation.payload.seatsTaken) of \(invitation.payload.maxSeats) seats taken.")
+        }
+    }
+
+    private func presentMatchSoon() {
+        Task {
+            try? await Task.sleep(for: .milliseconds(450))
+            if games.lobby != nil { showMatch = true }
         }
     }
 

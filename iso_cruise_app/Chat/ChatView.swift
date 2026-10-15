@@ -3,6 +3,7 @@ import SwiftUI
 /// Group chat with every connected peer.
 struct ChatView: View {
     @Environment(SessionManager.self) private var session
+    @Environment(GameCoordinator.self) private var games
     @State private var draft = ""
     @State private var showPeers = false
     @State private var showProfile = false
@@ -85,6 +86,14 @@ struct ChatView: View {
             .sheet(isPresented: $showProfile) { ProfileView() }
             .sheet(item: $reportTarget) { target in
                 ReportView(target: target)
+            }
+            .onChange(of: games.lobby?.id) { _, id in
+                // A game invitation was accepted; make room for the game screen.
+                if id != nil {
+                    showPeers = false
+                    showProfile = false
+                    reportTarget = nil
+                }
             }
             .alert("Message not sent", isPresented: $sendFailed) {
                 Button("OK", role: .cancel) {}

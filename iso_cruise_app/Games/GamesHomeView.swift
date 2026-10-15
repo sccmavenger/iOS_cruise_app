@@ -36,6 +36,9 @@ struct GamesHomeView: View {
             .sheet(item: $selectedGame) { game in
                 GameDetailSheet(game: game)
             }
+            .onChange(of: games.lobby?.id) { _, id in
+                if id != nil { selectedGame = nil }
+            }
             .alert(
                 games.notice ?? "",
                 isPresented: Binding(
@@ -93,6 +96,8 @@ struct GameDetailSheet: View {
                     ForEach(offers) { offer in
                         Button {
                             games.join(offer)
+                            // Close right away so the game screen can appear when the host accepts.
+                            dismiss()
                         } label: {
                             HStack {
                                 VStack(alignment: .leading) {
@@ -204,12 +209,14 @@ struct GameArtwork: View {
         ZStack {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .fill(background)
+                .accessibilityHidden(true)
             switch game {
             case .ticTacToe: ticTacToe
             case .connectFour: connectFour
             case .colorMatch: colorMatch
             }
         }
+        .accessibilityHidden(true)
     }
 
     private var background: LinearGradient {
