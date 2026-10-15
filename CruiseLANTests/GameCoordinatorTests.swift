@@ -18,9 +18,10 @@ final class FakeNetwork {
         init(name: String, network: FakeNetwork) {
             self.name = name
             transport = HubTransport()
-            let profile = ProfileStore(defaults: UserDefaults(suiteName: "net-\(UUID().uuidString)")!)
+            let defaults = UserDefaults(suiteName: "net-\(UUID().uuidString)")!
+            let profile = ProfileStore(defaults: defaults)
             profile.setNickname(name)
-            session = SessionManager(transport: transport, profile: profile)
+            session = SessionManager(transport: transport, profile: profile, safety: SafetyStore(defaults: defaults))
             games = GameCoordinator(session: session)
             transport.network = network
             transport.owner = self
@@ -39,6 +40,7 @@ final class FakeNetwork {
         func invite(_ peer: PeerKey) {}
         func respond(toInvitation invitationId: UUID, accept: Bool) {}
         func disconnectAll() {}
+        func fingerprint(for peer: PeerKey) -> String? { peer.raw.uuidString }
         func send(_ data: Data, to peers: [PeerKey]) throws {
             guard let network, let owner else { return }
             for key in peers {
@@ -317,6 +319,20 @@ struct GameCoordinatorTests {
         #expect(!guest.games.openOffers.contains { $0.id == lobbyId })
         host.games.dismissEndedMatch()
         #expect(host.games.lobby == nil)
+    }
+
+    @Test("Blocking the opponent ends the match; a blocked host's game disappears")
+    func blockingDuringGames() throws {
+        _ = try startTicTacToe()
+        guest.session.block(identityId: host.id)
+        guard case .ended = guest.games.lobby?.phase else {
+            Issue.record("Expected the match to end for the blocker")
+            return
+        }
+        guest.games.dismissEndedMatch()
+        host.games.leave()
+        host.games.hostLobby(.ticTacToe)
+        #expect(guest.games.offers(for: .ticTacToe).isEmpty)
     }
 
     @Test("Public broadcasts contain only lobby metadata")

@@ -296,11 +296,17 @@ final class GameCoordinator {
         joiningLobbyId = nil
         invitation = nil
         offers[roster.lobbyId] = nil
+        // Names relayed by the host get the same safety filtering as names we see directly.
+        let players = roster.players.map { player in
+            var safe = player
+            safe.nickname = session.filter.safeNickname(player.nickname)
+            return safe
+        }
         if var current = lobby, current.id == roster.lobbyId {
-            current.players = roster.players
+            current.players = players
             lobby = current
         } else {
-            lobby = Lobby(id: roster.lobbyId, gameType: roster.gameType, hostId: identity.id, maxSeats: roster.maxSeats, players: roster.players)
+            lobby = Lobby(id: roster.lobbyId, gameType: roster.gameType, hostId: identity.id, maxSeats: roster.maxSeats, players: players)
             snapshot = nil
             revision = -1
         }

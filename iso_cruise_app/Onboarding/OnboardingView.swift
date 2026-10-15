@@ -6,9 +6,20 @@ struct OnboardingView: View {
     @State private var name = ""
     @FocusState private var nameFocused: Bool
 
-    private var sanitized: String? { Nickname.sanitize(name) }
+    private var sanitized: String? {
+        guard let clean = Nickname.sanitize(name), ContentFilter.shared.checkNickname(clean).isAllowed else { return nil }
+        return clean
+    }
+
+    private var nicknameProblem: String? {
+        guard let clean = Nickname.sanitize(name),
+              case .blocked(let reason) = ContentFilter.shared.checkNickname(clean)
+        else { return nil }
+        return reason.message
+    }
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 Image("Hero")
@@ -43,9 +54,16 @@ struct OnboardingView: View {
                         .submitLabel(.go)
                         .focused($nameFocused)
                         .onSubmit(save)
-                    Text("Shown to people nearby. Up to \(Nickname.maxCharacters) characters. You can change it later.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .id("nickname")
+                    if let nicknameProblem {
+                        Text(nicknameProblem)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    } else {
+                        Text("Shown to people nearby. Up to \(Nickname.maxCharacters) characters. You can change it later.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Text("Next, iOS will ask to find devices on your local network. CruiseLAN needs this to discover nearby people.")
@@ -55,6 +73,14 @@ struct OnboardingView: View {
             .padding(24)
         }
         .scrollDismissesKeyboard(.interactively)
+        // Keep the field and any error visible above the keyboard while typing.
+        .onChange(of: nameFocused) { _, focused in
+            guard focused else { return }
+            Task {
+                try? await Task.sleep(for: .milliseconds(350))
+                withAnimation { proxy.scrollTo("nickname", anchor: .center) }
+            }
+        }
         // Pinned above the keyboard so it's always reachable while typing.
         .safeAreaInset(edge: .bottom) {
             Button(action: save) {
@@ -67,6 +93,7 @@ struct OnboardingView: View {
             .disabled(sanitized == nil)
             .padding(.horizontal, 24)
             .padding(.vertical, 12)
+        }
         }
     }
 

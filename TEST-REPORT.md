@@ -1,6 +1,6 @@
 # CruiseLAN Test Report
 
-**Date:** 2026-10-14
+**Date:** 2026-10-15
 **Build:** 1.0 (2), branch `cruiselan-mvp`
 **Tooling:** Xcode 27.0 (27A266a), iOS Simulator runtime 27
 
@@ -9,7 +9,7 @@ Results are **PASS**, **FAIL**, or **NOT RUN**. Anything run only in the Simulat
 ## Automated tests
 
 Swift Testing, target `CruiseLANTests`, run from the Xcode scheme `iso_cruise_app` on the iPhone Simulator.
-**60 / 60 passed, 0 failed.**
+**135 / 135 passed, 0 failed.**
 
 | Suite | Tests | Covers |
 |---|---|---|
@@ -17,7 +17,9 @@ Swift Testing, target `CruiseLANTests`, run from the Xcode scheme `iso_cruise_ap
 | Nickname sanitizing | 4 | Whitespace, control and bidi-override stripping, empty input, character and byte limits. |
 | Session manager (fake transport) | 14 | Hello binding. Duplicate packets. 20 messages in order. No traffic before hello. Spoofed sender. Identity hijack. Stale sequence. Malformed data. Rate limit. Send requires a peer. Disconnect notice. Invitations. Hello arriving before the connected callback. Late packet after disconnect. |
 | Tic-Tac-Toe rules | 11 | X first. Row, column, and both diagonal wins. O wins. Draw. Occupied cell. Out of turn. Non-player. Lock after result. Rematch alternates. |
-| Lobby and match sync (in-memory multi-device network) | 15 | Offer, join, ready, start. Identical win on both devices. Invalid client moves. Duplicate move id applied once. Stale base revision. Stale snapshot ignored. Snapshots and events from a non-host ignored. Forged sender. Host disconnect. Guest leave. Full lobby. Invite accept and decline. Rematch voting. Ended lobby not relisted. Broadcast contents. |
+| Content filter | 69 | Clean kid phrases allowed (including Scunthorpe-style words). Profanity and sexual terms blocked. 17 evasion tricks caught (leetspeak, spacing, full-width, zero-width, Cyrillic, diacritics). Personal info blocked. Nickname handling. Performance. |
+| Session safety (added to the session suite above) | 5 | Outgoing filtered messages never sent. Incoming bad messages hidden. Three strikes auto-blocks. Manual block removes messages and declines invitations. Blocks persist and can be undone. Bad nicknames shown as "Player". |
+| Lobby and match sync (in-memory multi-device network) | 16 | Offer, join, ready, start. Identical win on both devices. Invalid client moves. Duplicate move id applied once. Stale base revision. Stale snapshot ignored. Snapshots and events from a non-host ignored. Forged sender. Host disconnect. Guest leave. Full lobby. Invite accept and decline. Rematch voting. Ended lobby not relisted. Blocking during games. Broadcast contents. |
 
 **Bug found by tests and fixed:** a peer's `hello` could arrive before the local "connected" callback and get dropped, so that side never bound the peer's identity. Both builds 1 and 2 include the fix.
 
@@ -45,6 +47,21 @@ Swift Testing, target `CruiseLANTests`, run from the Xcode scheme `iso_cruise_ap
 
 The winning-cell style and the leave alert were changed after the last simulator pass and have **not** been re-checked visually.
 
+## Three-simulator group chat and safety run (2026-10-15)
+
+**Setup:** iPhone 18 Pro (A), iPhone 18 Pro Max (B), and iPhone Air (C) simulators.
+
+**Result:** all six checks passed.
+- **Mesh:** A invited B, then C. B and C connected to each other automatically.
+- **Group chat:** all six one-to-many deliveries arrived.
+- **Onboarding:** the nickname "SexyKid" was rejected.
+- **Sender-side filter:** "this is shit" and "add me on snapchat" were blocked with a kind explanation and never sent.
+- **Report and block:** both worked, the blocked person's messages disappeared, and unblocking worked.
+
+**Follow-ups:**
+- The onboarding field now scrolls into view above the keyboard.
+- The banner icon is now hidden from VoiceOver.
+
 ## Acceptance tests (05-ACCEPTANCE-TESTS.md)
 
 | ID | Result | Evidence and notes |
@@ -69,7 +86,7 @@ The winning-cell style and the leave alert were changed after the last simulator
 ## Not verified
 
 - Anything on physical iPhones, including the Local Network permission prompt.
-- 3- and 4-device sessions.
+- 4-device sessions, and any multi-device session on physical phones (3 simulators passed).
 - Ship or hotel Wi-Fi.
 - Background and foreground transitions on a device.
 - One unconfirmed observation: once, right after onboarding, the simulator briefly reported "Application is not responding". It recovered on its own and didn't happen again. Watch for it on devices.

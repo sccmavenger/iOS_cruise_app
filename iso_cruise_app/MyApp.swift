@@ -7,7 +7,7 @@ import SwiftUI
 
     init() {
         let profile = ProfileStore()
-        let session = SessionManager(transport: MultipeerTransport(), profile: profile)
+        let session = SessionManager(transport: MultipeerTransport(), profile: profile, safety: SafetyStore())
         _profile = State(initialValue: profile)
         _session = State(initialValue: session)
         _games = State(initialValue: GameCoordinator(session: session))

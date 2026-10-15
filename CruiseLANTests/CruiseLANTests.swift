@@ -233,6 +233,7 @@ final class FakeTransport: PeerTransport {
     func respond(toInvitation invitationId: UUID, accept: Bool) { responses.append((invitationId, accept)) }
     func send(_ data: Data, to peers: [PeerKey]) throws { sent.append((data, peers)) }
     func disconnectAll() {}
+    func fingerprint(for peer: PeerKey) -> String? { peer.raw.uuidString }
 
     func sentEnvelopes() -> [Envelope] {
         sent.compactMap { try? EnvelopeCodec.decode($0.0) }
@@ -244,6 +245,7 @@ final class FakeTransport: PeerTransport {
 struct SessionManagerTests {
     let transport = FakeTransport()
     let session: SessionManager
+    let safety: SafetyStore
     let peerKey = PeerKey()
     let remoteId = "remote-peer-id"
 
@@ -251,7 +253,8 @@ struct SessionManagerTests {
         let defaults = UserDefaults(suiteName: "tests-\(UUID().uuidString)")!
         let profile = ProfileStore(defaults: defaults)
         profile.setNickname("Local")
-        session = SessionManager(transport: transport, profile: profile)
+        safety = SafetyStore(defaults: defaults)
+        session = SessionManager(transport: transport, profile: profile, safety: safety)
     }
 
     private func encode(_ payload: Envelope.Payload, sender: String? = nil, sequence: Int, id: UUID = UUID()) -> Data {
@@ -354,9 +357,9 @@ struct SessionManagerTests {
 
     @Test("Sending chat requires a connected peer")
     func sendChat() throws {
-        #expect(session.sendChat("hello") == false)
+        #expect(session.sendChat("hello") == .noRecipients)
         connectAndHello()
-        #expect(session.sendChat("  hello  "))
+        #expect(session.sendChat("  hello  ") == .sent)
         let chat = try #require(transport.sentEnvelopes().last)
         #expect(chat.payload == .chat(ChatPayload(text: "hello")))
         #expect(transport.sent.last?.1 == [peerKey])
@@ -389,6 +392,71 @@ struct SessionManagerTests {
         session.handle(.received(encode(.chat(ChatPayload(text: "ghost")), sequence: 9), from: peerKey))
         #expect(session.connectedPeers.isEmpty)
         #expect(!session.chat.messages.contains { $0.text == "ghost" })
+    }
+
+    @Test("Outgoing messages are filtered and never sent")
+    func outgoingFiltered() {
+        connectAndHello()
+        let before = transport.sent.count
+        #expect(session.sendChat("what the fuck") == .filtered(.inappropriate))
+        #expect(session.sendChat("text me 555 123 4567") == .filtered(.personalInfo))
+        #expect(transport.sent.count == before)
+    }
+
+    @Test("Incoming bad messages are hidden; three strikes blocks the sender")
+    func incomingFilteredAndAutoBlock() {
+        connectAndHello()
+        session.handle(.received(encode(.chat(ChatPayload(text: "you are shit")), sequence: 2), from: peerKey))
+        #expect(!session.chat.messages.contains { $0.kind == .text })
+        #expect(session.chat.messages.last?.text.contains("hidden by the safety filter") == true)
+
+        session.handle(.received(encode(.chat(ChatPayload(text: "f u c k")), sequence: 3), from: peerKey))
+        session.handle(.received(encode(.chat(ChatPayload(text: "send nudes")), sequence: 4), from: peerKey))
+        #expect(session.peers[peerKey]?.isBlocked == true)
+        #expect(session.connectedPeers.isEmpty)
+        #expect(safety.blocked.count == 1)
+
+        // Further traffic from a blocked peer is ignored, even clean messages.
+        session.handle(.received(encode(.chat(ChatPayload(text: "hi again")), sequence: 5), from: peerKey))
+        #expect(!session.chat.messages.contains { $0.text == "hi again" })
+    }
+
+    @Test("Blocking removes their messages, excludes them from sends, and declines their invitations")
+    func manualBlock() {
+        connectAndHello()
+        session.handle(.received(encode(.chat(ChatPayload(text: "hello friend")), sequence: 2), from: peerKey))
+        session.block(identityId: remoteId)
+        #expect(!session.chat.messages.contains { $0.text == "hello friend" })
+        #expect(session.sendChat("anyone?") == .noRecipients)
+
+        // A later invitation from the same device is declined automatically.
+        let invitationId = UUID()
+        session.handle(.invitationReceived(invitationId: invitationId, from: peerKey, displayName: "Remote"))
+        #expect(session.invitations.isEmpty)
+        #expect(transport.responses.last?.0 == invitationId)
+        #expect(transport.responses.last?.1 == false)
+    }
+
+    @Test("Blocks persist and can be undone")
+    func persistAndUnblock() throws {
+        connectAndHello()
+        session.block(peerKey)
+        let person = try #require(safety.blocked.first)
+        // A new discovery of the same device stays hidden.
+        session.handle(.peerFound(peerKey, displayName: "Remote"))
+        #expect(session.nearbyPeers.isEmpty && session.connectedPeers.isEmpty)
+        session.unblock(person)
+        #expect(safety.blocked.isEmpty)
+        #expect(!session.connectedPeers.isEmpty)
+    }
+
+    @Test("Inappropriate nicknames are shown as Player")
+    func badNicknames() {
+        session.handle(.peerFound(peerKey, displayName: "SexyBoy"))
+        #expect(session.nearbyPeers.first?.displayName == "Player")
+        session.handle(.peerStateChanged(peerKey, .connected))
+        session.handle(.received(encode(.hello(HelloPayload(nickname: "b1tch", protocolVersion: 1)), sequence: 1), from: peerKey))
+        #expect(session.connectedIdentities.first?.nickname == "Player")
     }
 
     @Test("Invitations are surfaced and answered")

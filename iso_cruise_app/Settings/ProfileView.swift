@@ -7,8 +7,14 @@ struct ProfileView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
 
+    private var nicknameProblem: String? {
+        guard let clean = Nickname.sanitize(name) else { return nil }
+        if case .blocked(let reason) = ContentFilter.shared.checkNickname(clean) { return reason.message }
+        return nil
+    }
+
     private var canSave: Bool {
-        guard let clean = Nickname.sanitize(name) else { return false }
+        guard let clean = Nickname.sanitize(name), nicknameProblem == nil else { return false }
         return clean != profile.nickname
     }
 
@@ -23,7 +29,19 @@ struct ProfileView: View {
                 } header: {
                     Text("Nickname")
                 } footer: {
-                    Text("Nicknames aren't verified, so the tag helps people tell you apart. Changing your nickname reconnects you.")
+                    if let nicknameProblem {
+                        Text(nicknameProblem).foregroundStyle(.red)
+                    } else {
+                        Text("Nicknames aren't verified, so the tag helps people tell you apart. Changing your nickname reconnects you.")
+                    }
+                }
+
+                Section("Safety") {
+                    TipRow(symbol: "hand.raised.fill", text: "A safety filter blocks bad words, sexual content, and personal info like phone numbers, emails, links, social media, and cabin numbers.")
+                    TipRow(symbol: "exclamationmark.bubble.fill", text: "Touch and hold a message to report or block someone. Tell a parent or crew member if anything feels wrong.")
+                    NavigationLink("Blocked People (\(session.safety.blocked.count))") {
+                        BlockedPeopleView()
+                    }
                 }
 
                 Section("Privacy") {
@@ -39,6 +57,7 @@ struct ProfileView: View {
 
                 Section {
                     LabeledContent("Version", value: Bundle.main.versionString)
+                    NavigationLink("Acknowledgements") { AcknowledgementsView() }
                 }
             }
             .navigationTitle("Profile")
@@ -67,5 +86,31 @@ extension Bundle {
         let version = infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         let build = infoDictionary?["CFBundleVersion"] as? String ?? "?"
         return "\(version) (\(build))"
+    }
+}
+
+/// Attribution required by the licenses of the safety-filter word lists.
+struct AcknowledgementsView: View {
+    var body: some View {
+        List {
+            Section {
+                Text("The safety filter's word list contains material from the following projects, modified for CruiseLAN.")
+            }
+            Section("List of Dirty, Naughty, Obscene, and Otherwise Bad Words") {
+                Text("© Shutterstock, Inc. Licensed under Creative Commons Attribution 4.0 International (CC BY 4.0). Modified: entries removed and added for a kid-safe chat app.")
+                Link("creativecommons.org/licenses/by/4.0", destination: URL(string: "https://creativecommons.org/licenses/by/4.0/")!)
+            }
+            Section("obscenity") {
+                Text("© 2025 Joseph Liu. MIT License.")
+            }
+            Section("cuss") {
+                Text("© 2016 Titus Wormer. MIT License.")
+            }
+            Section("MIT License") {
+                Text("Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND.")
+                    .font(.footnote)
+            }
+        }
+        .navigationTitle("Acknowledgements")
     }
 }

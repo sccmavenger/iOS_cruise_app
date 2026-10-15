@@ -7,6 +7,8 @@ struct ChatView: View {
     @State private var showPeers = false
     @State private var showProfile = false
     @State private var sendFailed = false
+    @State private var filterNotice: String?
+    @State private var reportTarget: ReportTarget?
     @FocusState private var composerFocused: Bool
 
     var body: some View {
@@ -27,16 +29,46 @@ struct ChatView: View {
                     .scrollDismissesKeyboard(.immediately)
                     .onTapGesture { composerFocused = false }
                 } else {
-                    MessageList(messages: session.chat.messages)
-                        .onTapGesture { composerFocused = false }
+                    MessageList(
+                        messages: session.chat.messages,
+                        onReport: { reportTarget = $0 },
+                        onBlock: { session.block(identityId: $0.senderId) }
+                    )
+                    .onTapGesture { composerFocused = false }
+                }
+
+                if let filterNotice {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: "hand.raised.fill").accessibilityHidden(true)
+                        Text(filterNotice)
+                    }
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.coral, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .padding(.horizontal)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .accessibilityAddTraits(.isStaticText)
                 }
 
                 ComposerBar(draft: $draft, canSend: !session.connectedIdentities.isEmpty, isFocused: $composerFocused) {
-                    if session.sendChat(draft) {
+                    switch session.sendChat(draft) {
+                    case .sent:
                         draft = ""
-                    } else {
+                        withAnimation { filterNotice = nil }
+                    case .filtered(let reason):
+                        // Keep the draft so they can fix it; explain kindly.
+                        withAnimation { filterNotice = reason.message }
+                    case .noRecipients:
                         sendFailed = true
+                    case .empty:
+                        break
                     }
+                }
+                .onChange(of: draft) { _, _ in
+                    if filterNotice != nil { withAnimation { filterNotice = nil } }
                 }
             }
             .navigationTitle("Chat")
@@ -51,6 +83,9 @@ struct ChatView: View {
             }
             .sheet(isPresented: $showPeers) { PeersView() }
             .sheet(isPresented: $showProfile) { ProfileView() }
+            .sheet(item: $reportTarget) { target in
+                ReportView(target: target)
+            }
             .alert("Message not sent", isPresented: $sendFailed) {
                 Button("OK", role: .cancel) {}
             } message: {
@@ -128,6 +163,8 @@ struct ConnectionBanner: View {
 
 struct MessageList: View {
     let messages: [ChatStore.Message]
+    var onReport: (ReportTarget) -> Void = { _ in }
+    var onBlock: (ChatStore.Message) -> Void = { _ in }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -136,6 +173,16 @@ struct MessageList: View {
                     ForEach(messages) { message in
                         MessageRow(message: message)
                             .id(message.id)
+                            .contextMenu {
+                                if message.kind == .text, !message.isLocal {
+                                    Button("Report…", systemImage: "exclamationmark.bubble") {
+                                        onReport(ReportTarget(identityId: message.senderId, name: message.senderName, message: message.text))
+                                    }
+                                    Button("Block \(message.senderName)", systemImage: "hand.raised", role: .destructive) {
+                                        onBlock(message)
+                                    }
+                                }
+                            }
                     }
                 }
                 .padding()

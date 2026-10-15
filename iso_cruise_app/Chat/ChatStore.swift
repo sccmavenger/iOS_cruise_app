@@ -35,6 +35,11 @@ final class ChatStore {
         append(Message(id: UUID(), kind: .system, senderId: "", senderName: "", text: text, date: date, isLocal: false))
     }
 
+    /// Removes everything a (now blocked) sender said.
+    func removeMessages(from senderId: String) {
+        messages.removeAll { $0.kind == .text && $0.senderId == senderId }
+    }
+
     func clear() {
         messages.removeAll()
     }

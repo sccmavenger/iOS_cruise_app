@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import MultipeerConnectivity
 import os
@@ -138,6 +139,16 @@ nonisolated final class MultipeerTransport: NSObject, PeerTransport, @unchecked 
     func disconnectAll() {
         let session = state.withLock { $0.session }
         session?.disconnect()
+    }
+
+    /// SHA-256 of the remote `MCPeerID`'s archived form. Peers reuse their archived
+    /// `MCPeerID` across launches (see `PeerIDStore`), so this stays stable for a device
+    /// until it changes its nickname, and two devices with the same nickname differ.
+    func fingerprint(for peer: PeerKey) -> String? {
+        guard let peerID = state.withLock({ $0.peersByKey[peer] }),
+              let data = try? NSKeyedArchiver.archivedData(withRootObject: peerID, requiringSecureCoding: true)
+        else { return nil }
+        return SHA256.hash(data: data).prefix(16).map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: - Helpers

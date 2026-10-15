@@ -9,6 +9,7 @@ struct PeersView: View {
     @Environment(\.openURL) private var openURL
     /// Ticks every few seconds so the troubleshooting tips can appear after a delay.
     @State private var clock = Date.now
+    @State private var reportTarget: ReportTarget?
 
     /// Seconds without any peer before troubleshooting tips appear.
     private static let troubleshootingDelay: TimeInterval = 20
@@ -31,6 +32,21 @@ struct PeersView: View {
                     }
                     ForEach(session.connectedPeers) { peer in
                         PeerRow(peer: peer, trailing: .connected)
+                            .swipeActions {
+                                Button("Block", systemImage: "hand.raised", role: .destructive) {
+                                    session.block(peer.key)
+                                }
+                            }
+                            .contextMenu {
+                                if let identity = peer.identity {
+                                    Button("Report…", systemImage: "exclamationmark.bubble") {
+                                        reportTarget = ReportTarget(identityId: identity.id, name: identity.nickname, message: nil)
+                                    }
+                                }
+                                Button("Block", systemImage: "hand.raised", role: .destructive) {
+                                    session.block(peer.key)
+                                }
+                            }
                     }
                     if !session.connectedPeers.isEmpty {
                         Button("Disconnect from Everyone", role: .destructive) {
@@ -62,7 +78,7 @@ struct PeersView: View {
                             .accessibilityLabel("Searching")
                     }
                 } footer: {
-                    Text("Only people running CruiseLAN appear here. They must accept your request before you can chat.")
+                    Text("Only people running CruiseLAN appear here. They must accept your request before you can chat. Swipe left on someone you're connected to if you need to block them.")
                 }
 
                 if shouldShowTroubleshooting(at: clock) {
@@ -79,6 +95,7 @@ struct PeersView: View {
                     try? await Task.sleep(for: .seconds(5))
                 }
             }
+            .sheet(item: $reportTarget) { ReportView(target: $0) }
             .navigationTitle("People")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

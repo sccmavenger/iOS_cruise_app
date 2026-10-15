@@ -48,4 +48,7 @@ protocol PeerTransport: AnyObject {
     func send(_ data: Data, to peers: [PeerKey]) throws
     /// Leaves the current session (all peers) while continuing to advertise and browse.
     func disconnectAll()
+    /// A stable, opaque identifier for a remote device that survives app relaunches
+    /// (used only to remember blocked people on this device).
+    func fingerprint(for peer: PeerKey) -> String?
 }

@@ -29,6 +29,8 @@ final class SessionManager {
         var identity: PeerIdentity?
         /// Set after a connected peer drops, so stray late packets can't revive it.
         var didDisconnect = false
+        /// Blocked by this user: hidden from lists, traffic ignored, never sent to.
+        var isBlocked = false
 
         var id: PeerKey { key }
         var shownName: String { identity?.labeledName ?? displayName }
@@ -38,6 +40,13 @@ final class SessionManager {
         let id: UUID
         let from: PeerKey
         let displayName: String
+    }
+
+    enum ChatSendResult: Equatable {
+        case sent
+        case empty
+        case noRecipients
+        case filtered(ContentFilter.Reason)
     }
 
     enum Status: Equatable {
@@ -56,6 +65,8 @@ final class SessionManager {
     let localId = UUID().uuidString
     let chat = ChatStore()
     let profile: ProfileStore
+    let safety: SafetyStore
+    let filter: ContentFilter
 
     private(set) var peers: [PeerKey: RemotePeer] = [:]
     private(set) var invitations: [Invitation] = []
@@ -75,11 +86,21 @@ final class SessionManager {
     @ObservationIgnored private var seenOrder: [UUID] = []
     @ObservationIgnored private var lastSequenceBySender: [String: Int] = [:]
     @ObservationIgnored private var recentArrivals: [PeerKey: [Date]] = [:]
+    /// Filtered messages received per sender this session; drives auto-blocking.
+    @ObservationIgnored private var filterStrikes: [String: Int] = [:]
     @ObservationIgnored private let now: () -> Date
 
-    init(transport: any PeerTransport, profile: ProfileStore, now: @escaping () -> Date = { .now }) {
+    init(
+        transport: any PeerTransport,
+        profile: ProfileStore,
+        safety: SafetyStore = SafetyStore(),
+        filter: ContentFilter = .shared,
+        now: @escaping () -> Date = { .now }
+    ) {
         self.transport = transport
         self.profile = profile
+        self.safety = safety
+        self.filter = filter
         self.now = now
         eventTask = Task { [weak self, events = transport.events] in
             for await event in events {
@@ -92,11 +113,11 @@ final class SessionManager {
     // MARK: - Derived state
 
     var connectedPeers: [RemotePeer] {
-        peers.values.filter { $0.connection == .connected }.sorted { $0.shownName < $1.shownName }
+        peers.values.filter { $0.connection == .connected && !$0.isBlocked }.sorted { $0.shownName < $1.shownName }
     }
 
     var nearbyPeers: [RemotePeer] {
-        peers.values.filter { $0.connection != .connected && $0.isNearby }.sorted { $0.displayName < $1.displayName }
+        peers.values.filter { $0.connection != .connected && $0.isNearby && !$0.isBlocked }.sorted { $0.displayName < $1.displayName }
     }
 
     /// Identities of connected peers that completed the handshake.
@@ -152,14 +173,64 @@ final class SessionManager {
         transport.disconnectAll()
     }
 
-    /// Sends a chat message to every connected peer. Returns `false` if it couldn't be sent.
+    /// Sends a chat message to every connected peer after running the safety filter.
     @discardableResult
-    func sendChat(_ rawText: String) -> Bool {
+    func sendChat(_ rawText: String) -> ChatSendResult {
         let text = String(rawText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(EnvelopeCodec.maxChatCharacters))
-        guard !text.isEmpty else { return false }
-        guard let envelope = send(.chat(ChatPayload(text: text))) else { return false }
+        guard !text.isEmpty else { return .empty }
+        if case .blocked(let reason) = filter.check(text) { return .filtered(reason) }
+        guard let envelope = send(.chat(ChatPayload(text: text))) else { return .noRecipients }
         chat.appendText(id: envelope.id, senderId: localId, senderName: localIdentity.nickname, text: text, isLocal: true)
-        return true
+        return .sent
+    }
+
+    // MARK: - Blocking
+
+    /// Blocks a peer on this device: their traffic is ignored, they disappear from lists,
+    /// their invitations are declined automatically, and their past messages are removed.
+    /// Remembered across launches by device fingerprint.
+    func block(_ key: PeerKey) {
+        guard var peer = peers[key], !peer.isBlocked else { return }
+        let name = peer.identity?.labeledName ?? peer.displayName
+        if let fingerprint = transport.fingerprint(for: key) {
+            safety.block(fingerprint: fingerprint, name: name)
+        }
+        peer.isBlocked = true
+        peers[key] = peer
+        invitations.removeAll { $0.from == key }
+        if let identity = peer.identity {
+            chat.removeMessages(from: identity.id)
+            onPeerDisconnected?(identity)
+        }
+        chat.appendSystem("You blocked \(name). You won't see their messages or invitations.")
+    }
+
+    func block(identityId: String) {
+        guard let key = peers.values.first(where: { $0.identity?.id == identityId })?.key else { return }
+        block(key)
+    }
+
+    func unblock(_ person: SafetyStore.BlockedPerson) {
+        safety.unblock(person)
+        for (key, var peer) in peers where transport.fingerprint(for: key) == person.fingerprint {
+            peer.isBlocked = false
+            peers[key] = peer
+        }
+    }
+
+    /// Plain-text report body for the Mail composer. Contains only what's on screen.
+    func reportBody(about identityId: String, message: String?, reason: String) -> String {
+        let name = identity(for: identityId)?.labeledName ?? "Unknown"
+        var lines = [
+            "CruiseLAN safety report",
+            "Reason: \(reason)",
+            "Person: \(name)",
+            "Reported by: \(localIdentity.labeledName)",
+            "Time: \(now().formatted(date: .abbreviated, time: .shortened))",
+            "App version: \(Bundle.main.versionString)",
+        ]
+        if let message { lines.append("Message: \"\(message)\"") }
+        return lines.joined(separator: "\n")
     }
 
     /// Wraps a payload in an envelope and sends it. `recipients` are identity ids; `nil` means all connected peers.
@@ -197,10 +268,12 @@ final class SessionManager {
         case .startFailed(let message):
             status = .failed(message)
 
-        case .peerFound(let key, let name):
+        case .peerFound(let key, let rawName):
+            let name = filter.safeNickname(rawName)
             var peer = peers[key] ?? RemotePeer(key: key, displayName: name, connection: .notConnected, isNearby: true, isInvited: false)
             peer.displayName = name
             peer.isNearby = true
+            peer.isBlocked = peer.isBlocked || safety.isBlocked(transport.fingerprint(for: key))
             peers[key] = peer
 
         case .peerLost(let key):
@@ -212,8 +285,12 @@ final class SessionManager {
                 peers[key] = peer
             }
 
-        case .invitationReceived(let invitationId, let key, let name):
-            invitations.append(Invitation(id: invitationId, from: key, displayName: name))
+        case .invitationReceived(let invitationId, let key, let rawName):
+            if peers[key]?.isBlocked == true || safety.isBlocked(transport.fingerprint(for: key)) {
+                transport.respond(toInvitation: invitationId, accept: false)
+                return
+            }
+            invitations.append(Invitation(id: invitationId, from: key, displayName: filter.safeNickname(rawName)))
 
         case .invitationExpired(let invitationId):
             invitations.removeAll { $0.id == invitationId }
@@ -280,6 +357,7 @@ final class SessionManager {
             handleStateChange(key: key, state: .connected)
         }
         guard var peer = peers[key], peer.connection == .connected else { return reject("unknown peer") }
+        guard !peer.isBlocked else { return }
         guard allowArrival(from: key) else { return reject("rate limited") }
 
         let envelope: Envelope
@@ -303,7 +381,7 @@ final class SessionManager {
                   let nickname = Nickname.sanitize(hello.nickname)
             else { return reject("bad hello") }
             remember(envelope)
-            let identity = PeerIdentity(id: envelope.senderId, nickname: nickname)
+            let identity = PeerIdentity(id: envelope.senderId, nickname: filter.safeNickname(nickname))
             peer.identity = identity
             peers[key] = peer
             chat.appendSystem("\(identity.labeledName) connected")
@@ -319,6 +397,16 @@ final class SessionManager {
 
         switch envelope.payload {
         case .chat(let chatPayload):
+            // Re-check on receipt: a modified sender could skip its own filter.
+            guard filter.check(chatPayload.text).isAllowed else {
+                let strikes = (filterStrikes[identity.id] ?? 0) + 1
+                filterStrikes[identity.id] = strikes
+                chat.appendSystem("A message from \(identity.labeledName) was hidden by the safety filter.")
+                if strikes >= SafetyConfig.autoBlockThreshold {
+                    block(key)
+                }
+                return
+            }
             chat.appendText(id: envelope.id, senderId: identity.id, senderName: identity.nickname, text: chatPayload.text, isLocal: false)
         case .heartbeat:
             break
