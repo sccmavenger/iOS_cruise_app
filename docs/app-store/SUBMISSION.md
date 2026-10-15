@@ -38,7 +38,7 @@ Values are copy-ready. Character limits are noted, and every value is within the
 - Free. All territories.
 - Note: under Texas SB 2420, Apple asks for parental consent for minors' downloads. CruiseLAN has no accounts or purchases, so there's nothing extra to build for 1.0 (see section 9).
 
-## 3. Version information (ASC › iOS App › 1.4)
+## 3. Version information (ASC › iOS App › 1.5)
 
 **Promotional text (170):**
 ```
