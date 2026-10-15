@@ -95,5 +95,5 @@ The winning-cell style and the leave alert were changed after the last simulator
 
 | Build | Contents | State |
 |---|---|---|
-| 1.0 (1) | Chat (M1, plus the hello fix) | Archived. Upload is **blocked** until the App Store Connect app record exists. |
-| 1.0 (2) | Chat plus Tic-Tac-Toe (M2) | Archived. Upload is **blocked** for the same reason. |
+| 1.0 (1) | Chat (M1, plus the hello fix) | Archived, **not uploaded**. Build 2 contains everything in it. |
+| 1.0 (2) | Chat, Tic-Tac-Toe, and kid-safety filter/block/report | **Uploaded 2026-10-15.** Xcode Organizer created the App Store Connect record (name "CruiseLAN", SKU `cruiselan-001`). Later command-line uploads confirmed the record exists. |
