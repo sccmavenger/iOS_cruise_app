@@ -91,6 +91,11 @@ final class SessionManager {
     /// A transport started this recently counts as "just came back" for choosing who reconnects.
     /// The returning phone finds the other within a second or so of restarting.
     static let justStartedWindow: TimeInterval = 5
+    /// After this user declines someone's connection request, further requests from that
+    /// phone are declined quietly for this long, so nobody can keep asking.
+    static let declineMute: TimeInterval = 10 * 60
+    /// Most connection requests waiting for an answer; more are declined quietly.
+    static let maxWaitingRequests = 5
     /// Time for the "stepping away" message to leave before the transport is torn down.
     static let stepAwayGrace: Duration = .milliseconds(300)
     private static let logger = Logger(subsystem: "com.dannyguillory.cruiselan", category: "session")
@@ -146,6 +151,8 @@ final class SessionManager {
     /// Connections this user approved (invited, accepted, or auto-reconnected). Only these become trusted.
     @ObservationIgnored private var approvedKeys: Set<PeerKey> = []
     @ObservationIgnored private var reconnectTasks: [PeerKey: Task<Void, Never>] = [:]
+    /// Phones whose connection request this user declined, until when they're muted.
+    @ObservationIgnored private var declinedUntil: [String: Date] = [:]
     @ObservationIgnored private var groupCreations: [String: [Date]] = [:]
     /// After `stop()`, transport events still in flight belong to the old session; ignore them until `.started`.
     @ObservationIgnored private var discardingStaleEvents = false
@@ -217,8 +224,10 @@ final class SessionManager {
     /// up, they show here again so they can be invited by hand.
     var nearbyPeers: [RemotePeer] {
         let awayDevices = Set(awayIdentityIds.compactMap { fingerprintByIdentity[$0] })
+        let requesting = Set(invitations.map(\.from))
         return peers.values.filter { peer in
-            guard peer.connection != .connected, peer.isNearby, !peer.isBlocked else { return false }
+            // Someone asking to connect is listed under Requests instead.
+            guard peer.connection != .connected, peer.isNearby, !peer.isBlocked, !requesting.contains(peer.key) else { return false }
             guard !awayDevices.isEmpty, reconnectTasks[peer.key] != nil,
                   let fingerprint = transport.fingerprint(for: peer.key)
             else { return true }
@@ -411,7 +420,11 @@ final class SessionManager {
 
     func respond(to invitation: Invitation, accept: Bool) {
         invitations.removeAll { $0.id == invitation.id }
-        if accept { approvedKeys.insert(invitation.from) }
+        if accept {
+            approvedKeys.insert(invitation.from)
+        } else if let fingerprint = transport.fingerprint(for: invitation.from) {
+            declinedUntil[fingerprint] = now().addingTimeInterval(Self.declineMute)
+        }
         transport.respond(toInvitation: invitation.id, accept: accept)
     }
 
@@ -618,7 +631,7 @@ final class SessionManager {
             peers[key] = peer
             if !peer.isBlocked, peer.connection == .notConnected, trusted.isTrusted(transport.fingerprint(for: key)) {
                 scheduleReconnect(key)
-            } else if DebugTrace.autoConnect, !peer.isBlocked, peer.connection == .notConnected, (profile.nickname ?? "") < rawName {
+            } else if DebugTrace.autoConnects(with: rawName), !peer.isBlocked, peer.connection == .notConnected, (profile.nickname ?? "") < rawName {
                 invite(key)
             }
 
@@ -641,12 +654,20 @@ final class SessionManager {
             // Someone this user already accepted is coming back: no need to ask again.
             // (If they claim an id we know, they still have to prove it after connecting.)
             DebugTrace.log("session invitation from \(rawName) trusted=\(trusted.isTrusted(transport.fingerprint(for: key)))")
-            if trusted.isTrusted(transport.fingerprint(for: key)) || DebugTrace.autoConnect {
+            if trusted.isTrusted(transport.fingerprint(for: key)) || DebugTrace.autoConnects(with: rawName) {
                 approvedKeys.insert(key)
                 transport.respond(toInvitation: invitationId, accept: true)
                 return
             }
+            // Requests wait quietly in People (no pop-up), so a crowd can't flood the screen.
+            // Someone this user just declined, or one request too many, is declined silently.
+            let fingerprint = transport.fingerprint(for: key)
+            let muted = fingerprint.flatMap { declinedUntil[$0] }.map { $0 > now() } ?? false
             invitations.removeAll { $0.from == key }
+            guard !muted, invitations.count < Self.maxWaitingRequests else {
+                transport.respond(toInvitation: invitationId, accept: false)
+                return
+            }
             invitations.append(Invitation(id: invitationId, from: key, displayName: filter.safeNickname(rawName)))
 
         case .invitationExpired(let invitationId):

@@ -612,4 +612,26 @@ struct SessionManagerTests {
         #expect(transport.responses.first?.0 == invitationId)
         #expect(transport.responses.first?.1 == false)
     }
+
+    @Test("After a decline, that phone's next requests are declined quietly")
+    func declineMutesRequests() throws {
+        session.handle(.invitationReceived(invitationId: UUID(), from: peerKey, displayName: "Remote"))
+        session.respond(to: try #require(session.invitations.first), accept: false)
+        let again = UUID()
+        session.handle(.invitationReceived(invitationId: again, from: peerKey, displayName: "Remote"))
+        #expect(session.invitations.isEmpty)
+        #expect(transport.responses.last?.0 == again)
+        #expect(transport.responses.last?.1 == false)
+    }
+
+    @Test("A crowd can't pile up requests: beyond the limit they're declined quietly")
+    func requestsAreCapped() {
+        let keys = (0...SessionManager.maxWaitingRequests).map { _ in PeerKey() }
+        for (index, key) in keys.enumerated() {
+            session.handle(.invitationReceived(invitationId: UUID(), from: key, displayName: "Person \(index)"))
+        }
+        #expect(session.invitations.count == SessionManager.maxWaitingRequests)
+        #expect(transport.responses.count == 1)
+        #expect(transport.responses.first?.1 == false)
+    }
 }

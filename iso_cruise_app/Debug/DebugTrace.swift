@@ -31,11 +31,14 @@ nonisolated enum DebugTrace {
 }
 
 extension DebugTrace {
-    /// Debug-only: with `-CruiseLANAutoConnect`, invite everyone found and accept every
-    /// invitation, so connection tests can run without tapping.
-    static var autoConnect: Bool {
+    /// Debug-only: with `-CruiseLANAutoConnect Ana,Ben`, connects to the named test devices
+    /// without tapping (invites them and accepts their requests). Anyone else is treated
+    /// normally, so a nearby real phone never gets automatic requests from a test device.
+    static func autoConnects(with nickname: String) -> Bool {
         #if DEBUG
-        ProcessInfo.processInfo.arguments.contains("-CruiseLANAutoConnect")
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let index = arguments.firstIndex(of: "-CruiseLANAutoConnect"), arguments.indices.contains(index + 1) else { return false }
+        return arguments[index + 1].split(separator: ",").contains { $0 == nickname }
         #else
         false
         #endif

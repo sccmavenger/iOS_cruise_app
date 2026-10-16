@@ -27,6 +27,18 @@ struct PeersView: View {
                     }
                 }
 
+                if !session.invitations.isEmpty {
+                    Section {
+                        ForEach(session.invitations) { invitation in
+                            RequestRow(invitation: invitation)
+                        }
+                    } header: {
+                        Text("Requests")
+                    } footer: {
+                        Text("Only accept people you recognize. Names aren't verified. If you decline, that phone can't ask again for 10 minutes.")
+                    }
+                }
+
                 Section("Connected") {
                     if session.connectedPeers.isEmpty {
                         Text("No one yet")
@@ -170,6 +182,46 @@ struct PeersView: View {
         case .failed: return true
         case .idle: return false
         }
+    }
+}
+
+/// Someone asking to connect, with Accept and Decline.
+struct RequestRow: View {
+    @Environment(SessionManager.self) private var session
+    let invitation: SessionManager.Invitation
+
+    var body: some View {
+        // Name on top, buttons underneath, so long names and large text sizes still fit.
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                Image(systemName: "person.crop.circle.badge.questionmark")
+                    .font(.title3)
+                    .foregroundStyle(Theme.teal)
+                    .frame(width: 32)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(invitation.displayName)
+                    Text("Wants to connect")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            HStack(spacing: 10) {
+                Button { session.respond(to: invitation, accept: false) } label: {
+                    Text("Decline").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel("Decline \(invitation.displayName)")
+                Button { session.respond(to: invitation, accept: true) } label: {
+                    Text("Accept").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.teal)
+                .accessibilityLabel("Accept \(invitation.displayName)")
+            }
+        }
+        .padding(.vertical, 4)
     }
 }
 

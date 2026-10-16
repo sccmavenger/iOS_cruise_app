@@ -18,24 +18,8 @@ struct ContentView: View {
                 session.start()
             }
         }
-        .alert(
-            invitationTitle,
-            isPresented: Binding(
-                get: { session.invitations.first != nil },
-                set: { _ in }
-            ),
-            presenting: session.invitations.first
-        ) { invitation in
-            Button("Accept") { session.respond(to: invitation, accept: true) }
-            Button("Decline", role: .cancel) { session.respond(to: invitation, accept: false) }
-        } message: { _ in
-            Text("Only accept people you recognize. Names aren't verified.")
-        }
-    }
-
-    private var invitationTitle: String {
-        guard let invitation = session.invitations.first else { return "" }
-        return "\(invitation.displayName) wants to connect"
+        // Connection requests don't pop up: they wait in People › Requests, and the Chats
+        // banner says how many are waiting. (See docs/decisions/connection-requests.md.)
     }
 }
 

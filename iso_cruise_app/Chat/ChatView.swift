@@ -391,7 +391,9 @@ struct ConnectionBanner: View {
         switch session.status {
         case .failed: "exclamationmark.triangle.fill"
         case .idle: "pause.circle"
-        case .running: session.connectedPeers.isEmpty ? "dot.radiowaves.left.and.right" : "checkmark.circle.fill"
+        case .running:
+            if !session.invitations.isEmpty { "person.crop.circle.badge.questionmark" }
+            else { session.connectedPeers.isEmpty ? "dot.radiowaves.left.and.right" : "checkmark.circle.fill" }
         }
     }
 
@@ -408,6 +410,8 @@ struct ConnectionBanner: View {
         case .failed: return "Couldn't start nearby search"
         case .idle: return "Not searching"
         case .running:
+            let requests = session.invitations.count
+            if requests > 0 { return requests == 1 ? "1 person wants to connect" : "\(requests) people want to connect" }
             let connected = session.connectedPeers.count
             let away = awayCount > 0 ? " · \(awayCount) away" : ""
             if connected > 0 { return (connected == 1 ? "Connected to 1 person" : "Connected to \(connected) people") + away }

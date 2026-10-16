@@ -12,8 +12,10 @@ nonisolated final class MultipeerTransport: NSObject, PeerTransport, @unchecked 
     /// Bonjour service type. Must match `NSBonjourServices` (`_cruiselan._tcp` / `_udp`).
     static let serviceType = "cruiselan"
     static let protocolVersion = "1"
-    static let invitationTimeout: TimeInterval = 30
-    static let maxPendingInvitations = 3
+    /// How long a connection request waits for an answer. Requests sit quietly in People
+    /// rather than popping up, so they get a minute to be noticed.
+    static let invitationTimeout: TimeInterval = 60
+    static let maxPendingInvitations = 5
     /// MultipeerConnectivity sessions support at most 8 peers including the local one.
     static let maxSessionPeers = kMCSessionMaximumNumberOfPeers - 1
 
