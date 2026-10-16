@@ -32,7 +32,7 @@ struct ProfileView: View {
                     if let nicknameProblem {
                         Text(nicknameProblem).foregroundStyle(.red)
                     } else {
-                        Text("Nicknames aren't verified, so the tag helps people tell you apart. Changing your nickname reconnects you.")
+                        Text("Nicknames aren't verified, but your tag can't be faked: friends can check it to know it's really you. Changing your nickname reconnects you.")
                     }
                 }
 
@@ -45,13 +45,13 @@ struct ProfileView: View {
                 }
 
                 Section("Privacy") {
-                    TipRow(symbol: "lock.fill", text: "Connections between phones are encrypted.")
+                    TipRow(symbol: "lock.fill", text: "Messages are end-to-end encrypted: phones that pass them along can't read them.")
                     TipRow(symbol: "icloud.slash", text: "No accounts, servers, analytics, or internet.")
                     TipRow(symbol: "trash", text: "Chats and games live only in memory and disappear when you quit.")
                 }
 
                 Section("Good to know") {
-                    TipRow(symbol: "antenna.radiowaves.left.and.right", text: "CruiseLAN reaches people nearby. It is not a ship-wide network, and some Wi-Fi networks block it.")
+                    TipRow(symbol: "antenna.radiowaves.left.and.right", text: "Phones running CruiseLAN pass messages along for each other, so the more people nearby have it open, the further it reaches. Some Wi-Fi networks block it.")
                     TipRow(symbol: "moon.zzz", text: "When you switch apps, games pause for up to 10 minutes. Friends nearby can nudge your phone over Bluetooth when it's your turn or they send a message.")
                 }
 

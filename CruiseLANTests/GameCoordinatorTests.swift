@@ -22,10 +22,12 @@ final class FakeNetwork {
             let defaults = UserDefaults(suiteName: "net-\(UUID().uuidString)")!
             let profile = ProfileStore(defaults: defaults)
             profile.setNickname(name)
-            session = SessionManager(transport: transport, profile: profile, safety: SafetyStore(defaults: defaults), trusted: TrustedPeersStore(defaults: defaults))
+            session = SessionManager(transport: transport, profile: profile, safety: SafetyStore(defaults: defaults))
             games = GameCoordinator(session: session)
             transport.network = network
             transport.owner = self
+            session.start()
+            session.handle(.started)
         }
 
         var id: String { session.localId }
@@ -61,7 +63,7 @@ final class FakeNetwork {
         return node
     }
 
-    func connect(_ a: Node, _ b: Node) {
+    func connect(_ a: Node, _ b: Node, befriend: Bool = true) {
         let keyForB = PeerKey(), keyForA = PeerKey()
         a.keys[ObjectIdentifier(b)] = keyForB
         b.keys[ObjectIdentifier(a)] = keyForA
@@ -69,6 +71,28 @@ final class FakeNetwork {
         b.session.handle(.peerFound(keyForA, displayName: a.name))
         a.session.handle(.peerStateChanged(keyForB, .connected))
         b.session.handle(.peerStateChanged(keyForA, .connected))
+        if befriend { makeContacts(a, b) }
+    }
+
+    /// One asks to connect and the other accepts (as people would in People › Requests).
+    func makeContacts(_ a: Node, _ b: Node) {
+        guard !a.session.isContact(b.id) else { return }
+        a.session.requestContact(b.id)
+        if let request = b.session.invitations.first(where: { $0.from == a.id }) {
+            b.session.respond(to: request, accept: true)
+        }
+    }
+
+    /// The envelope inside a packet, as `reader` would see it (nil if it's not for them).
+    func envelope(in data: Data, for reader: Node) -> Envelope? {
+        guard let packet = try? MeshPacket.decode(data) else { return nil }
+        return try? packet.open(as: reader.session.meshIdentity)
+    }
+
+    /// A packet sealed by `sender`'s phone for `recipient`, carrying any envelope (even a forged one).
+    func sealed(_ envelope: Envelope, from sender: Node, to recipient: Node) throws -> Data {
+        try MeshPacket.sealed(envelope, to: [(recipient.id, recipient.session.meshIdentity.agreementPublicKey)],
+                              from: sender.session.meshIdentity, ttl: MeshPacket.maxTTL).encoded()
     }
 
     func disconnect(_ a: Node, _ b: Node) {
@@ -92,7 +116,7 @@ final class FakeNetwork {
             guard let receiver = nodes.first(where: { sender.keys[ObjectIdentifier($0)] == key }),
                   let senderKey = receiver.keys[ObjectIdentifier(sender)]
             else { continue }
-            if let envelope = try? EnvelopeCodec.decode(data) {
+            if let envelope = envelope(in: data, for: receiver) {
                 log.append((sender.name, receiver.name, envelope))
             }
             if let interceptor, !interceptor(data, sender, receiver) { continue }
@@ -249,7 +273,7 @@ struct GameCoordinatorTests {
         // rejected by the session layer before the coordinator sees it.
         let forged = Envelope(sessionId: host.games.lobby?.id, senderId: host.id, sequence: 999,
                               payload: .moveRequest(MoveRequestPayload(moveId: UUID(), baseRevision: 0, move: .ticTacToe(cell: 0))))
-        network.inject(try EnvelopeCodec.encode(forged), from: guest, to: host)
+        network.inject(try network.sealed(forged, from: guest, to: host), from: guest, to: host)
         #expect(host.games.revision == 0)
         #expect(host.session.rejectedEnvelopeCount == 1)
     }
@@ -305,7 +329,7 @@ struct GameCoordinatorTests {
         }
     }
 
-    @Test("Each pair of phones shares a private Bluetooth key from the hello handshake")
+    @Test("Each pair of contacts shares a private Bluetooth key, exchanged through the mesh")
     func nudgeKeyExchange() throws {
         let raw = { (key: SymmetricKey?) in key.map { $0.withUnsafeBytes { Data($0) } } }
         let hostToGuest = try #require(raw(host.session.nudgeKey(sealingTo: guest.id)))
@@ -443,8 +467,8 @@ struct GameCoordinatorTests {
         guest.games.join(offer)
         guest.games.setReady(true)
         // Drop just the start message.
-        network.interceptor = { data, _, _ in
-            guard let envelope = try? EnvelopeCodec.decode(data) else { return true }
+        network.interceptor = { [network] data, _, receiver in
+            guard let envelope = network.envelope(in: data, for: receiver) else { return true }
             return envelope.kind != .startGame
         }
         host.games.startGame()
@@ -804,6 +828,92 @@ struct GameCoordinatorTests {
     func noUnexpectedBroadcastContent() throws {
         _ = try startTicTacToe()
         let kinds = Set(network.log.map(\.envelope.kind))
-        #expect(kinds.isSubset(of: [.hello, .lobbyOffer, .joinRequest, .joinAccept, .ready, .startGame, .stateSnapshot, .leave]))
+        // Mesh housekeeping (hello, announce, contact setup, Bluetooth keys) plus the lobby and game.
+        #expect(kinds.isSubset(of: [.hello, .announce, .contactRequest, .contactAccept, .keys,
+                                    .lobbyOffer, .joinRequest, .joinAccept, .ready, .startGame, .stateSnapshot, .leave]))
+    }
+}
+
+@MainActor
+@Suite("Mesh relaying")
+struct MeshNetworkTests {
+    let network = FakeNetwork()
+
+    @Test("Two contacts out of each other's range chat and play through a phone in between, which sees nothing")
+    func relayedChatAndGame() throws {
+        let ana = network.addNode("Ana"), ben = network.addNode("Ben"), cal = network.addNode("Cal")
+        // A chain: Ana – Ben – Cal. Ana and Cal never link directly, and Ben isn't anyone's contact.
+        network.connect(ana, ben, befriend: false)
+        network.connect(ben, cal, befriend: false)
+        #expect(ana.session.discoveredPeople.first { $0.id == cal.id }?.hops == 1)
+
+        network.makeContacts(ana, cal)
+        #expect(ana.session.connectedIdentities.map(\.id) == [cal.id])
+        #expect(cal.session.connectedIdentities.map(\.id) == [ana.id])
+        #expect(ben.session.connectedIdentities.isEmpty)
+
+        let dm = ana.session.directConversation(with: try #require(ana.session.identity(for: cal.id)))
+        #expect(ana.session.sendChat("Meet at the pool?", in: dm.id) == .sent)
+        #expect(cal.session.chat.messages.contains { $0.text == "Meet at the pool?" })
+        #expect(!ben.session.chat.messages.contains { $0.text == "Meet at the pool?" })
+
+        ana.games.hostLobby(.ticTacToe)
+        let offer = try #require(cal.games.offers(for: .ticTacToe).first)
+        cal.games.join(offer)
+        cal.games.setReady(true)
+        ana.games.startGame()
+        ana.games.play(.ticTacToe(cell: 4))
+        #expect(cal.games.snapshot == ana.games.snapshot)
+        #expect(ben.games.offers(for: .ticTacToe).isEmpty)
+
+        // Everything Ben carried was sealed: he couldn't open a single private packet.
+        let readableByBen = network.log.filter { $0.to == "Ben" }.map(\.envelope.kind)
+        #expect(Set(readableByBen).isSubset(of: [.hello, .announce]))
+    }
+
+    @Test("More than eight phones can all reach each other")
+    func beyondEight() throws {
+        let nodes = (0..<12).map { network.addNode("P\($0)") }
+        // A line of twelve phones: each linked only to its neighbors, so the far ends are 11 phones apart...
+        for (a, b) in zip(nodes, nodes.dropFirst()) { network.connect(a, b, befriend: false) }
+        // ...which is past the hop limit, so they can't hear each other; phones within it can.
+        let first = nodes[0]
+        let withinReach = nodes[1...MeshPacket.maxTTL]
+        for node in withinReach {
+            #expect(first.session.discoveredPeople.contains { $0.id == node.id })
+        }
+        #expect(!first.session.discoveredPeople.contains { $0.id == nodes[11].id })
+
+        // A tighter cluster of twelve: each phone linked to its next two, everyone becomes contacts with P0.
+        let cluster = FakeNetwork()
+        let members = (0..<12).map { cluster.addNode("C\($0)") }
+        for index in members.indices {
+            for step in 1...2 where index + step < members.count {
+                cluster.connect(members[index], members[index + step], befriend: false)
+            }
+        }
+        for member in members.dropFirst() { cluster.makeContacts(members[0], member) }
+        #expect(members.map(\.session.rejectedEnvelopeCount) == Array(repeating: 0, count: 12))
+        #expect(members.dropFirst().filter { !members[0].session.isContact($0.id) }.map(\.name) == [])
+        #expect(members.dropFirst().filter { members[0].session.directory[$0.id] == nil }.map(\.name) == [])
+        #expect(members[0].session.connectedIdentities.count == 11)
+        #expect(members[0].session.sendChat("Hello, everyone!") == .sent)
+        for member in members.dropFirst() {
+            #expect(member.session.chat.messages.contains { $0.text == "Hello, everyone!" })
+        }
+    }
+
+    @Test("When the phone in between leaves, the far contact goes away; when it's back, so are they")
+    func relayLeaves() throws {
+        let ana = network.addNode("Ana"), ben = network.addNode("Ben"), cal = network.addNode("Cal")
+        network.connect(ana, ben, befriend: false)
+        network.connect(ben, cal, befriend: false)
+        network.makeContacts(ana, cal)
+        network.disconnect(ana, ben)
+        // Ana has no links left, so Cal is unreachable at once.
+        #expect(ana.session.connectedIdentities.isEmpty)
+        #expect(ana.session.awayIdentityIds == [cal.id])
+        network.connect(ana, ben, befriend: false)
+        #expect(ana.session.connectedIdentities.map(\.id) == [cal.id])
     }
 }

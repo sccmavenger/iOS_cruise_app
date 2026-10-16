@@ -129,12 +129,12 @@ Answer as follows. The calculated rating should be **4+**.
 
 **Notes (paste):**
 ```
-CruiseLAN is an offline, peer-to-peer chat and games app for people physically near each other (built for cruise ships, where internet is expensive). It uses MultipeerConnectivity; there is no server and no account.
+CruiseLAN is an offline, peer-to-peer chat and games app for people physically near each other (built for cruise ships, where internet is expensive). It uses MultipeerConnectivity; there is no server and no account. Phones running CruiseLAN relay end-to-end encrypted messages for each other (a mesh), so friends further apart than radio range can still reach each other. Only people you've accepted can message you.
 
 TESTING REQUIRES TWO iPHONES (or an iPhone and an iPad running the iPhone app) with Wi-Fi and Bluetooth turned on. They don't need to join a network.
 
 1. On both devices: open CruiseLAN, enter any nickname, tap Get Started, and allow Local Network, Bluetooth, and Notifications.
-2. Device A: Chat › People (top right) › tap Device B under "Nearby" › Invite. Device B: tap Accept.
+2. Device A: Chat › People (top right) › tap Device B under "People on CruiseLAN" › Invite. Device B: Chat shows "1 person wants to connect" › People › Requests › Accept.
 3. Chat: type a message on either device. Try "send nudes" or a phone number to see the safety filter block it.
 4. Report/Block: on the other device, touch and hold a received message › Report. Reporting blocks the sender and opens a pre-filled email to our safety contact.
 5. Games: Games › Chess › Host a New Game on Device A. Device B sees "1 open game nearby" › Join › I'm Ready. Device A › Start Game.
@@ -142,9 +142,9 @@ TESTING REQUIRES TWO iPHONES (or an iPhone and an iPad running the iPhone app) w
 
 Background mode "bluetooth-peripheral": while CruiseLAN is in the background or the phone is locked, iOS ends peer-to-peer Wi-Fi sessions. CruiseLAN advertises a small Bluetooth service so a nearby friend's phone can deliver a short message: "your turn", a chat preview, or a game move for a host whose phone is locked. Each one is end-to-end encrypted with a key only those two phones share (exchanged over the encrypted Multipeer link), and iOS wakes the app to post a local notification or apply the move. To see it: start a game on both devices, lock Device B when it's B's turn after A moves, or send a chat from A while B is in another app. B shows "Your turn in Chess" or the message preview.
 
-User-generated content safeguards (Guideline 1.2): on-device filter on send and on receipt; three filtered messages auto-block the sender; report and block on every message and person; every connection must be accepted; nicknames are filtered; contact email is in Profile › Help and on our support page.
+User-generated content safeguards (Guideline 1.2): on-device filter on send and on receipt; three filtered messages auto-block the sender; report and block on every message and person; every contact must be accepted (requests wait in a list, no pop-ups; declines mute the requester for 10 minutes); phones that relay messages can't read them; nicknames are filtered; contact email is in Profile › Help and on our support page.
 
-Encryption: the app only uses Apple's built-in encryption for MultipeerConnectivity, so it's exempt (ITSAppUsesNonExemptEncryption = NO).
+Encryption: all encryption uses Apple's operating system: MultipeerConnectivity link encryption and CryptoKit (ChaCha20-Poly1305, Curve25519) for end-to-end message encryption and signatures. No third-party or proprietary cryptography (ITSAppUsesNonExemptEncryption = NO).
 ```
 
 ## 7. Export compliance

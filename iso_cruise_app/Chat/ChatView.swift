@@ -381,7 +381,7 @@ struct ConnectionBanner: View {
     }
 
     private var isSearching: Bool {
-        if case .running = session.status, session.connectedPeers.isEmpty { return true }
+        if case .running = session.status, session.connectedIdentities.isEmpty { return true }
         return false
     }
 
@@ -393,7 +393,7 @@ struct ConnectionBanner: View {
         case .idle: "pause.circle"
         case .running:
             if !session.invitations.isEmpty { "person.crop.circle.badge.questionmark" }
-            else { session.connectedPeers.isEmpty ? "dot.radiowaves.left.and.right" : "checkmark.circle.fill" }
+            else { session.connectedIdentities.isEmpty ? "dot.radiowaves.left.and.right" : "checkmark.circle.fill" }
         }
     }
 
@@ -401,7 +401,7 @@ struct ConnectionBanner: View {
         switch session.status {
         case .failed: .orange
         case .idle: .secondary
-        case .running: session.connectedPeers.isEmpty ? Theme.teal : .green
+        case .running: session.connectedIdentities.isEmpty ? Theme.teal : .green
         }
     }
 
@@ -412,11 +412,11 @@ struct ConnectionBanner: View {
         case .running:
             let requests = session.invitations.count
             if requests > 0 { return requests == 1 ? "1 person wants to connect" : "\(requests) people want to connect" }
-            let connected = session.connectedPeers.count
+            let connected = session.connectedIdentities.count
             let away = awayCount > 0 ? " · \(awayCount) away" : ""
             if connected > 0 { return (connected == 1 ? "Connected to 1 person" : "Connected to \(connected) people") + away }
             if awayCount > 0 { return awayCount == 1 ? "Reconnecting… 1 person away" : "Reconnecting… \(awayCount) people away" }
-            let nearby = session.nearbyPeers.count
+            let nearby = session.discoveredPeople.count
             if nearby > 0 { return nearby == 1 ? "1 person nearby — tap to connect" : "\(nearby) people nearby — tap to connect" }
             return "Searching for people nearby…"
         }

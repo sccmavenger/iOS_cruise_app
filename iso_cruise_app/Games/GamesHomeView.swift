@@ -91,13 +91,16 @@ struct GameDetailSheet: View {
                 }
 
                 Section {
+                    let canHost = games.lobby == nil && games.joiningLobbyId == nil
                     Button {
                         games.hostLobby(game)
                         dismiss()
                     } label: {
+                        // Grey the whole row (icon included) when it can't be used, so it doesn't look tappable.
                         Label("Host a New Game", systemImage: "plus.circle.fill")
+                            .foregroundStyle(canHost ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
                     }
-                    .disabled(games.lobby != nil || games.joiningLobbyId != nil)
+                    .disabled(!canHost)
                 } footer: {
                     Text("Nearby connected players will see your game and can join. You can also invite someone directly from the lobby.")
                 }

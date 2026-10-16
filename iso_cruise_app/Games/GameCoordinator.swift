@@ -341,7 +341,7 @@ final class GameCoordinator {
             receiveRematchVote(ref, from: identity)
         case .leave(let leave):
             receiveLeave(leave, from: identity)
-        case .hello, .chat, .heartbeat, .error, .presence, .proof:
+        case .hello, .chat, .heartbeat, .error, .presence, .announce, .contactRequest, .contactAccept, .keys, .contactEnd:
             break
         }
     }

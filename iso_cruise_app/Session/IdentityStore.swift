@@ -19,7 +19,10 @@ final class IdentityStore {
         /// When this id was first made. Ids are retired after `maxAge` even if used daily,
         /// so the Bluetooth beacon derived from them can't track a phone for long.
         var createdAt: Date? = nil
-        /// Known people: id → nickname.
+        /// Mesh keys (raw private keys). `localId` is derived from the signing key.
+        var signingKey: Data? = nil
+        var agreementKey: Data? = nil
+        /// Contacts: id → nickname.
         var known: [String: String]
         /// Raw nudge keys by person id.
         var inboundKeys: [String: Data]

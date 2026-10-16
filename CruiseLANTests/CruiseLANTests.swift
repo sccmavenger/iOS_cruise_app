@@ -13,7 +13,7 @@ struct EnvelopeCodecTests {
     func roundTrip() throws {
         let lobby = UUID()
         let payloads: [Envelope.Payload] = [
-            .hello(HelloPayload(nickname: "Sam", protocolVersion: 1)),
+            .hello(HelloPayload(nickname: "Sam", protocolVersion: 2)),
             .chat(ChatPayload(text: "Hello deck 7")),
             .lobbyOffer(LobbyOfferPayload(lobbyId: lobby, gameType: .ticTacToe, hostNickname: "Sam", maxSeats: 2, seatsTaken: 1)),
             .joinRequest(LobbyRefPayload(lobbyId: lobby)),
@@ -29,7 +29,11 @@ struct EnvelopeCodecTests {
             .error(ErrorPayload(code: "x", message: "y")),
             .heartbeat(EmptyPayload()),
             .presence(PresencePayload(away: true)),
-            .proof(ProofPayload(mac: Data(repeating: 1, count: 32).base64EncodedString())),
+            .announce(AnnouncePayload(nickname: "Sam")),
+            .contactRequest(ContactPayload(nickname: "Sam")),
+            .contactAccept(ContactPayload(nickname: "Sam")),
+            .keys(KeysPayload(nudgeKey: Data(repeating: 1, count: 32).base64EncodedString())),
+            .contactEnd(EmptyPayload()),
         ]
         #expect(Set(payloads.map(\.kind)) == Set(Envelope.Kind.allCases))
 
@@ -44,7 +48,7 @@ struct EnvelopeCodecTests {
     func wireFormat() throws {
         let envelope = Envelope(senderId: "p", sequence: 7, payload: .chat(ChatPayload(text: "hi")))
         let object = try #require(try JSONSerialization.jsonObject(with: EnvelopeCodec.encode(envelope)) as? [String: Any])
-        #expect(object["version"] as? Int == 1)
+        #expect(object["version"] as? Int == 2)
         #expect(object["kind"] as? String == "chat")
         #expect(object["senderId"] as? String == "p")
         #expect(object["sequence"] as? Int == 7)
@@ -62,13 +66,13 @@ struct EnvelopeCodecTests {
 
     @Test("Unknown kind is rejected")
     func unknownKind() {
-        let json = #"{"version":1,"id":"\#(UUID().uuidString)","kind":"selfDestruct","senderId":"p","sequence":1,"payload":{}}"#
+        let json = #"{"version":2,"id":"\#(UUID().uuidString)","kind":"selfDestruct","senderId":"p","sequence":1,"payload":{}}"#
         #expect(throws: EnvelopeCodecError.malformed) { try EnvelopeCodec.decode(Data(json.utf8)) }
     }
 
     @Test("Payload that doesn't match its kind is rejected")
     func kindPayloadMismatch() {
-        let json = #"{"version":1,"id":"\#(UUID().uuidString)","kind":"chat","senderId":"p","sequence":1,"payload":{"nickname":"x","protocolVersion":1}}"#
+        let json = #"{"version":2,"id":"\#(UUID().uuidString)","kind":"chat","senderId":"p","sequence":1,"payload":{"nickname":"x","protocolVersion":1}}"#
         #expect(throws: EnvelopeCodecError.malformed) { try EnvelopeCodec.decode(Data(json.utf8)) }
     }
 
@@ -238,8 +242,59 @@ final class FakeTransport: PeerTransport {
     func disconnectAll() {}
     func fingerprint(for peer: PeerKey) -> String? { peer.raw.uuidString }
 
-    func sentEnvelopes() -> [Envelope] {
-        sent.compactMap { try? EnvelopeCodec.decode($0.0) }
+    /// Packets sent on the link to `key`.
+    func packets(to key: PeerKey) -> [MeshPacket] {
+        sent.filter { $0.1.contains(key) }.compactMap { try? MeshPacket.decode($0.0) }
+    }
+}
+
+/// Settable clock for tests.
+@MainActor
+final class TestClock {
+    var now = Date(timeIntervalSince1970: 1_800_000_000)
+}
+
+/// Another phone, played by the test: its own mesh identity, talking to the session over one link.
+@MainActor
+final class RemotePhone {
+    let identity = MeshIdentity()
+    let key = PeerKey()
+    let name: String
+    let clock: TestClock
+    private var sequence = 0
+
+    init(_ name: String, clock: TestClock) {
+        self.name = name
+        self.clock = clock
+    }
+
+    var id: String { identity.id }
+
+    func envelope(_ payload: Envelope.Payload, sender: String? = nil) -> Envelope {
+        sequence += 1
+        return Envelope(senderId: sender ?? id, sequence: sequence, payload: payload)
+    }
+
+    func hello() -> Data {
+        try! MeshPacket.broadcast(envelope(.hello(HelloPayload(nickname: name, protocolVersion: 2))), from: identity, ttl: 0, now: clock.now).encoded()
+    }
+
+    func announce(ttl: Int = MeshPacket.maxTTL, nickname: String? = nil) -> Data {
+        try! MeshPacket.broadcast(envelope(.announce(AnnouncePayload(nickname: nickname ?? name))), from: identity, ttl: ttl, now: clock.now).encoded()
+    }
+
+    /// A packet sealed for `session` (or for another identity).
+    func sealed(_ payload: Envelope.Payload, to session: SessionManager, sentAt: Date? = nil) -> Data {
+        sealedPacket(payload, toId: session.localId, agreementKey: session.meshIdentity.agreementPublicKey, sentAt: sentAt)
+    }
+
+    func sealedPacket(_ payload: Envelope.Payload, toId: String, agreementKey: Data, sentAt: Date? = nil, ttl: Int = MeshPacket.maxTTL) -> Data {
+        try! MeshPacket.sealed(envelope(payload), to: [(toId, agreementKey)], from: identity, ttl: ttl, now: sentAt ?? clock.now).encoded()
+    }
+
+    /// Opens what the session sent this phone on its link.
+    func received(from transport: FakeTransport) -> [Envelope] {
+        transport.packets(to: key).compactMap { try? $0.open(as: identity) }
     }
 }
 
@@ -247,159 +302,305 @@ final class FakeTransport: PeerTransport {
 @Suite("Session manager")
 struct SessionManagerTests {
     let transport = FakeTransport()
+    let clock = TestClock()
     let session: SessionManager
     let safety: SafetyStore
-    let peerKey = PeerKey()
-    let remoteId = "remote-peer-id"
+    let remote: RemotePhone
 
     init() {
         let defaults = UserDefaults(suiteName: "tests-\(UUID().uuidString)")!
         let profile = ProfileStore(defaults: defaults)
         profile.setNickname("Local")
         safety = SafetyStore(defaults: defaults)
-        session = SessionManager(transport: transport, profile: profile, safety: safety, trusted: TrustedPeersStore(defaults: defaults))
-    }
-
-    private func encode(_ payload: Envelope.Payload, sender: String? = nil, sequence: Int, id: UUID = UUID()) -> Data {
-        try! EnvelopeCodec.encode(Envelope(id: id, senderId: sender ?? remoteId, sequence: sequence, payload: payload))
-    }
-
-    private func connectAndHello(key: PeerKey? = nil, id: String? = nil, name: String = "Remote") {
-        let key = key ?? peerKey
-        session.handle(.peerFound(key, displayName: name))
-        session.handle(.peerStateChanged(key, .connected))
-        session.handle(.received(encode(.hello(HelloPayload(nickname: name, protocolVersion: 1)), sender: id ?? remoteId, sequence: 1), from: key))
-    }
-
-    @Test("Connecting sends hello and binds identity")
-    func handshake() throws {
+        let clock = clock
+        session = SessionManager(transport: transport, profile: profile, safety: safety, now: { clock.now })
+        remote = RemotePhone("Remote", clock: clock)
         session.start()
+        session.handle(.started)
+    }
+
+    private func link(_ phone: RemotePhone) {
+        session.handle(.peerFound(phone.key, displayName: phone.name))
+        session.handle(.peerStateChanged(phone.key, .connected))
+        session.handle(.received(phone.hello(), from: phone.key))
+    }
+
+    /// Links the remote phone and makes it a contact: it asks, this user accepts.
+    private func befriend(_ phone: RemotePhone) throws {
+        link(phone)
+        session.handle(.received(phone.sealed(.contactRequest(ContactPayload(nickname: phone.name)), to: session), from: phone.key))
+        let request = try #require(session.invitations.first { $0.from == phone.id })
+        session.respond(to: request, accept: true)
+    }
+
+    private func texts() -> [String] {
+        session.chat.messages.filter { $0.kind == .text }.map(\.text)
+    }
+
+    // MARK: Links and contacts
+
+    @Test("A new link sends a hello and an announcement; linked phones aren't contacts")
+    func linking() throws {
         #expect(transport.startedName == "Local")
-        connectAndHello()
-        let hello = try #require(transport.sentEnvelopes().first)
-        #expect(hello.kind == .hello)
-        #expect(hello.senderId == session.localId)
-        #expect(session.connectedIdentities.map(\.id) == [remoteId])
+        link(remote)
+        let packets = transport.packets(to: remote.key)
+        let hello = try #require(packets.first)
+        #expect(hello.ttl == 0 && hello.isBroadcast)
+        #expect(try hello.open(as: remote.identity).kind == .hello)
+        #expect(packets.contains { (try? $0.open(as: remote.identity).kind) == .announce })
+        #expect(session.directory[remote.id]?.hops == 0)
+        #expect(session.connectedIdentities.isEmpty)
+        #expect(session.discoveredPeople.map(\.id) == [remote.id])
     }
 
-    @Test("Chat is delivered once with the bound sender")
-    func chatDelivery() {
-        connectAndHello()
-        let id = UUID()
-        let data = encode(.chat(ChatPayload(text: "Hi there")), sequence: 2, id: id)
-        session.handle(.received(data, from: peerKey))
-        session.handle(.received(data, from: peerKey)) // duplicate packet
-        let texts = session.chat.messages.filter { $0.kind == .text }
-        #expect(texts.count == 1)
-        #expect(texts.first?.text == "Hi there")
-        #expect(texts.first?.senderId == remoteId)
+    @Test("A contact request waits in Requests; accepting makes a connected contact")
+    func acceptRequest() throws {
+        link(remote)
+        session.handle(.received(remote.sealed(.contactRequest(ContactPayload(nickname: "Remote")), to: session), from: remote.key))
+        let request = try #require(session.invitations.first)
+        #expect(request.labeledName == "Remote #\(Nickname.tag(for: remote.id))")
+        #expect(session.discoveredPeople.isEmpty) // listed under Requests instead
+        session.respond(to: request, accept: true)
+        #expect(session.connectedIdentities.map(\.id) == [remote.id])
+        #expect(remote.received(from: transport).contains { $0.kind == .contactAccept })
+    }
+
+    @Test("Asking someone to connect: only their acceptance of our request makes them a contact")
+    func sendRequest() throws {
+        link(remote)
+        // An acceptance nobody asked for is ignored.
+        session.handle(.received(remote.sealed(.contactAccept(ContactPayload(nickname: "Remote")), to: session), from: remote.key))
+        #expect(!session.isContact(remote.id))
+
+        #expect(session.requestContact(remote.id))
+        #expect(session.isRequested(remote.id))
+        #expect(remote.received(from: transport).contains { $0.kind == .contactRequest })
+        session.handle(.received(remote.sealed(.contactAccept(ContactPayload(nickname: "Remote")), to: session), from: remote.key))
+        #expect(session.connectedIdentities.map(\.id) == [remote.id])
+    }
+
+    @Test("Chat from a contact is delivered once")
+    func chatDelivery() throws {
+        try befriend(remote)
+        let data = remote.sealed(.chat(ChatPayload(text: "Hi there")), to: session)
+        session.handle(.received(data, from: remote.key))
+        session.handle(.received(data, from: remote.key)) // duplicate packet
+        #expect(texts() == ["Hi there"])
+        #expect(session.chat.messages.last { $0.kind == .text }?.senderId == remote.id)
+    }
+
+    @Test("Chat from someone who isn't a contact is never shown")
+    func strangersAreIgnored() {
+        link(remote)
+        session.handle(.received(remote.sealed(.chat(ChatPayload(text: "hey kid")), to: session), from: remote.key))
+        #expect(texts().isEmpty)
+    }
+
+    @Test("Sending chat seals it for contacts only, and nobody else can read it")
+    func sendChat() throws {
+        #expect(session.sendChat("hello") == .noRecipients)
+        try befriend(remote)
+        let eavesdropper = RemotePhone("Eve", clock: clock)
+        link(eavesdropper)
+        #expect(session.sendChat("  hello  ") == .sent)
+        #expect(remote.received(from: transport).contains { $0.payload == .chat(ChatPayload(text: "hello")) })
+        // The relay on the other link gets the packet but can't open it.
+        let relayed = transport.packets(to: eavesdropper.key).filter { !$0.isBroadcast }
+        #expect(!relayed.isEmpty)
+        #expect(relayed.allSatisfy { (try? $0.open(as: eavesdropper.identity)) == nil })
+    }
+
+    // MARK: Forgery, tampering, replay
+
+    @Test("A packet claiming someone else's id is rejected")
+    func impersonation() throws {
+        try befriend(remote)
+        let mallory = RemotePhone("Mallory", clock: clock)
+        link(mallory)
+        // Mallory signs with her own key but puts Remote's id on the packet...
+        var packet = try MeshPacket.decode(mallory.sealed(.chat(ChatPayload(text: "I'm Remote")), to: session))
+        packet.origin = remote.id
+        session.handle(.received(try packet.encoded(), from: mallory.key))
+        // ...or seals a packet whose envelope names Remote as the sender.
+        session.handle(.received(mallory.sealedPacket(.chat(ChatPayload(text: "Still Remote")), toId: session.localId,
+                                                      agreementKey: session.meshIdentity.agreementPublicKey), from: mallory.key))
+        let forged = mallory.envelope(.chat(ChatPayload(text: "Remote again")), sender: remote.id)
+        let data = try MeshPacket.sealed(forged, to: [(session.localId, session.meshIdentity.agreementPublicKey)],
+                                         from: mallory.identity, ttl: 6, now: clock.now).encoded()
+        session.handle(.received(data, from: mallory.key))
+        #expect(texts().isEmpty)
+        #expect(session.rejectedEnvelopeCount >= 2)
+    }
+
+    @Test("A packet altered in transit is rejected")
+    func tampering() throws {
+        try befriend(remote)
+        var packet = try MeshPacket.decode(remote.sealed(.chat(ChatPayload(text: "original")), to: session))
+        packet.body[packet.body.startIndex] ^= 0xFF
+        session.handle(.received(try packet.encoded(), from: remote.key))
+        var resigned = try MeshPacket.decode(remote.sealed(.chat(ChatPayload(text: "original 2")), to: session))
+        resigned.sentAt += 1 // signed field
+        session.handle(.received(try resigned.encoded(), from: remote.key))
+        #expect(texts().isEmpty)
+        #expect(session.rejectedEnvelopeCount == 2)
+    }
+
+    @Test("Old packets can't be replayed later")
+    func staleReplay() throws {
+        try befriend(remote)
+        let old = remote.sealed(.chat(ChatPayload(text: "from earlier")), to: session,
+                                sentAt: clock.now.addingTimeInterval(-MeshPacket.freshness - 1))
+        session.handle(.received(old, from: remote.key))
+        #expect(texts().isEmpty)
         #expect(session.rejectedEnvelopeCount == 1)
-    }
-
-    @Test("Twenty messages in order are all delivered")
-    func manyMessages() {
-        connectAndHello()
-        for index in 0..<20 {
-            session.handle(.received(encode(.chat(ChatPayload(text: "m\(index)")), sequence: index + 2), from: peerKey))
-        }
-        let texts = session.chat.messages.filter { $0.kind == .text }.map(\.text)
-        #expect(texts == (0..<20).map { "m\($0)" })
-    }
-
-    @Test("Messages before hello are dropped")
-    func requiresHandshake() {
-        session.handle(.peerFound(peerKey, displayName: "Remote"))
-        session.handle(.peerStateChanged(peerKey, .connected))
-        session.handle(.received(encode(.chat(ChatPayload(text: "sneaky")), sequence: 1), from: peerKey))
-        #expect(session.chat.messages.filter { $0.kind == .text }.isEmpty)
-        #expect(session.rejectedEnvelopeCount == 1)
-    }
-
-    @Test("Spoofed sender id is rejected")
-    func spoofing() {
-        connectAndHello()
-        session.handle(.received(encode(.chat(ChatPayload(text: "I am someone else")), sender: "other-id", sequence: 5), from: peerKey))
-        #expect(session.chat.messages.filter { $0.kind == .text }.isEmpty)
-    }
-
-    @Test("A second peer can't claim an identity already in use")
-    func identityHijack() {
-        connectAndHello()
-        let attacker = PeerKey()
-        connectAndHello(key: attacker, id: remoteId, name: "Evil")
-        #expect(session.connectedIdentities.count == 1)
-        #expect(session.peers[attacker]?.identity == nil)
-    }
-
-    @Test("Replayed or stale sequence numbers are rejected")
-    func staleSequence() {
-        connectAndHello()
-        session.handle(.received(encode(.chat(ChatPayload(text: "five")), sequence: 5), from: peerKey))
-        session.handle(.received(encode(.chat(ChatPayload(text: "three")), sequence: 3), from: peerKey))
-        #expect(session.chat.messages.filter { $0.kind == .text }.map(\.text) == ["five"])
     }
 
     @Test("Malformed data is counted, not crashed on")
     func malformed() {
-        connectAndHello()
-        session.handle(.received(Data("💣".utf8), from: peerKey))
-        session.handle(.received(Data(repeating: 0, count: 100), from: peerKey))
+        link(remote)
+        session.handle(.received(Data("💣".utf8), from: remote.key))
+        session.handle(.received(Data(repeating: 0, count: 100), from: remote.key))
         #expect(session.rejectedEnvelopeCount == 2)
     }
 
-    @Test("Flooding peers are rate limited")
-    func rateLimit() {
-        connectAndHello()
-        for index in 0..<(SessionManager.rateLimit + 20) {
-            session.handle(.received(encode(.chat(ChatPayload(text: "spam \(index)")), sequence: index + 2), from: peerKey))
+    // MARK: Relaying
+
+    @Test("Packets for others are relayed onward, never back, with one less hop, unread")
+    func relaying() throws {
+        let alice = RemotePhone("Alice", clock: clock), bob = RemotePhone("Bob", clock: clock)
+        link(alice)
+        link(bob)
+        let carol = MeshIdentity()
+        let data = alice.sealedPacket(.chat(ChatPayload(text: "for Carol")), toId: carol.id, agreementKey: carol.agreementPublicKey, ttl: 4)
+        session.handle(.received(data, from: alice.key))
+        let original = try MeshPacket.decode(data)
+        let toBob = transport.packets(to: bob.key).filter { $0.id == original.id }
+        #expect(toBob.count == 1)
+        #expect(toBob.first?.ttl == 3)
+        #expect(transport.packets(to: alice.key).allSatisfy { $0.id != original.id })
+        // Carol can still open it; the relay couldn't.
+        #expect(try toBob.first?.open(as: carol).payload == .chat(ChatPayload(text: "for Carol")))
+        #expect(texts().isEmpty)
+        // A second copy (arriving another way) isn't relayed again.
+        session.handle(.received(data, from: bob.key))
+        #expect(transport.packets(to: alice.key).allSatisfy { $0.id != original.id })
+    }
+
+    @Test("A packet on its last hop isn't relayed")
+    func hopLimit() throws {
+        let alice = RemotePhone("Alice", clock: clock), bob = RemotePhone("Bob", clock: clock)
+        link(alice)
+        link(bob)
+        let carol = MeshIdentity()
+        let data = alice.sealedPacket(.chat(ChatPayload(text: "last hop")), toId: carol.id, agreementKey: carol.agreementPublicKey, ttl: 1)
+        session.handle(.received(data, from: alice.key))
+        let id = try MeshPacket.decode(data).id
+        #expect(transport.packets(to: bob.key).allSatisfy { $0.id != id })
+    }
+
+    @Test("One phone flooding the mesh is cut off at its first neighbor")
+    func floodControl() {
+        let alice = RemotePhone("Alice", clock: clock), bob = RemotePhone("Bob", clock: clock)
+        link(alice)
+        link(bob)
+        let carol = MeshIdentity()
+        let before = transport.packets(to: bob.key).count
+        for index in 0..<(SessionManager.originRateLimit + 40) {
+            session.handle(.received(alice.sealedPacket(.chat(ChatPayload(text: "spam \(index)")), toId: carol.id,
+                                                        agreementKey: carol.agreementPublicKey), from: alice.key))
         }
-        let delivered = session.chat.messages.filter { $0.kind == .text }.count
-        // The hello consumed one slot of the window.
-        #expect(delivered == SessionManager.rateLimit - 1)
+        let relayed = transport.packets(to: bob.key).count - before
+        // The hello took one slot of Alice's budget.
+        #expect(relayed == SessionManager.originRateLimit - 1)
     }
 
-    @Test("Sending chat requires a connected peer")
-    func sendChat() throws {
-        #expect(session.sendChat("hello") == .noRecipients)
-        connectAndHello()
-        #expect(session.sendChat("  hello  ") == .sent)
-        let chat = try #require(transport.sentEnvelopes().last)
-        #expect(chat.payload == .chat(ChatPayload(text: "hello")))
-        #expect(transport.sent.last?.1 == [peerKey])
-        #expect(session.chat.messages.last?.isLocal == true)
+    @Test("People several phones away are found through relayed announcements")
+    func discoveryThroughRelays() {
+        let alice = RemotePhone("Alice", clock: clock)
+        link(alice)
+        let faraway = RemotePhone("Faraway", clock: clock)
+        session.handle(.received(faraway.announce(ttl: MeshPacket.maxTTL - 2), from: alice.key))
+        let person = session.discoveredPeople.first { $0.id == faraway.id }
+        #expect(person?.hops == 2)
+        #expect(session.requestContact(faraway.id))
     }
 
-    @Test("Disconnect clears identity and posts a notice")
-    func disconnect() {
-        connectAndHello()
-        session.handle(.peerStateChanged(peerKey, .notConnected))
+    // MARK: Reachability
+
+    @Test("A contact not heard from for a while counts as away, and is back when heard again")
+    func reachability() throws {
+        try befriend(remote)
+        clock.now += SessionManager.reachableWindow + 1
+        session.tick()
         #expect(session.connectedIdentities.isEmpty)
+        #expect(session.awayIdentityIds == [remote.id])
         #expect(session.chat.messages.last?.text.contains("disconnected") == true)
+        session.handle(.received(remote.announce(), from: remote.key))
+        #expect(session.connectedIdentities.map(\.id) == [remote.id])
+        #expect(session.chat.messages.last?.text.contains("is back") == true)
     }
 
-    @Test("Hello arriving before the connected callback is still accepted")
-    func helloBeforeConnectedEvent() {
-        session.handle(.received(encode(.hello(HelloPayload(nickname: "Early", protocolVersion: 1)), sequence: 1), from: peerKey))
-        #expect(session.connectedIdentities.map(\.id) == [remoteId])
-        // The late connected callback must not re-send hello or drop the identity.
-        let sentBefore = transport.sent.count
-        session.handle(.peerStateChanged(peerKey, .connected))
-        #expect(transport.sent.count == sentBefore)
-        #expect(session.connectedIdentities.map(\.id) == [remoteId])
+    @Test("Losing the only link to a contact makes them away right away")
+    func linkDrop() throws {
+        try befriend(remote)
+        session.handle(.peerStateChanged(remote.key, .notConnected))
+        #expect(session.connectedIdentities.isEmpty)
+        #expect(session.awayIdentityIds == [remote.id])
     }
 
-    @Test("Late packets after a disconnect don't revive the peer")
-    func latePacketAfterDisconnect() {
-        connectAndHello()
-        session.handle(.peerStateChanged(peerKey, .notConnected))
-        session.handle(.received(encode(.chat(ChatPayload(text: "ghost")), sequence: 9), from: peerKey))
-        #expect(session.connectedPeers.isEmpty)
-        #expect(!session.chat.messages.contains { $0.text == "ghost" })
+    @Test("Messages sent while a contact is away are held and delivered when they're back")
+    func outboxForAway() throws {
+        var queuedFor: [String] = []
+        session.onChatQueuedForAway = { ids, _, _ in queuedFor = ids }
+        try befriend(remote)
+        session.handle(.received(remote.sealed(.presence(PresencePayload(away: true)), to: session), from: remote.key))
+        #expect(session.awayIdentityIds == [remote.id])
+        #expect(session.steppedAwayIds == [remote.id])
+
+        #expect(session.sendChat("see you at dinner") == .sent)
+        #expect(queuedFor == [remote.id])
+        #expect(session.chat.messages.last?.isHeld == true)
+
+        clock.now += 1
+        session.handle(.received(remote.announce(), from: remote.key))
+        #expect(remote.received(from: transport).contains { $0.payload == .chat(ChatPayload(text: "see you at dinner")) })
+        #expect(session.chat.messages.last { $0.kind == .text }?.isHeld == false)
     }
+
+    @Test("Going to the background drops contacts quietly and reports it as a local suspend")
+    func suspendAndResume() throws {
+        var drops: [SessionManager.DropReason] = []
+        session.onPeerDisconnected = { _, reason in drops.append(reason) }
+        try befriend(remote)
+        session.suspend()
+        #expect(drops == [.localSuspend])
+        #expect(session.status == .idle)
+        #expect(session.connectedIdentities.isEmpty)
+        #expect(session.chat.messages.last?.text.contains("disconnected") != true)
+        #expect(session.awayIdentityIds == [remote.id])
+        session.resume()
+        #expect(transport.startedName == "Local")
+    }
+
+    @Test("Bluetooth nudge keys are exchanged with contacts through the mesh")
+    func nudgeKeys() throws {
+        try befriend(remote)
+        let keys = remote.received(from: transport).compactMap { envelope -> KeysPayload? in
+            if case .keys(let keys) = envelope.payload { return keys }
+            return nil
+        }
+        let given = try #require(keys.last.flatMap { Data(base64Encoded: $0.nudgeKey) })
+        #expect(session.nudgeKey(openingFrom: remote.id)?.withUnsafeBytes { Data($0) } == given)
+        let theirs = Data(repeating: 7, count: 32)
+        session.handle(.received(remote.sealed(.keys(KeysPayload(nudgeKey: theirs.base64EncodedString())), to: session), from: remote.key))
+        #expect(session.nudgeKey(sealingTo: remote.id)?.withUnsafeBytes { Data($0) } == theirs)
+    }
+
+    // MARK: Safety
 
     @Test("Outgoing messages are filtered and never sent")
-    func outgoingFiltered() {
-        connectAndHello()
+    func outgoingFiltered() throws {
+        try befriend(remote)
         let before = transport.sent.count
         #expect(session.sendChat("what the fuck") == .filtered(.inappropriate))
         #expect(session.sendChat("text me 555 123 4567") == .filtered(.personalInfo))
@@ -407,231 +608,144 @@ struct SessionManagerTests {
     }
 
     @Test("Incoming bad messages are hidden; three strikes blocks the sender")
-    func incomingFilteredAndAutoBlock() {
-        connectAndHello()
-        session.handle(.received(encode(.chat(ChatPayload(text: "you are shit")), sequence: 2), from: peerKey))
-        #expect(!session.chat.messages.contains { $0.kind == .text })
+    func incomingFilteredAndAutoBlock() throws {
+        try befriend(remote)
+        session.handle(.received(remote.sealed(.chat(ChatPayload(text: "you are shit")), to: session), from: remote.key))
+        #expect(texts().isEmpty)
         #expect(session.chat.messages.last?.text.contains("hidden by the safety filter") == true)
 
-        session.handle(.received(encode(.chat(ChatPayload(text: "f u c k")), sequence: 3), from: peerKey))
-        session.handle(.received(encode(.chat(ChatPayload(text: "send nudes")), sequence: 4), from: peerKey))
-        #expect(session.peers[peerKey]?.isBlocked == true)
-        #expect(session.connectedPeers.isEmpty)
-        #expect(safety.blocked.count == 1)
+        session.handle(.received(remote.sealed(.chat(ChatPayload(text: "f u c k")), to: session), from: remote.key))
+        session.handle(.received(remote.sealed(.chat(ChatPayload(text: "send nudes")), to: session), from: remote.key))
+        #expect(safety.isBlocked(identityId: remote.id))
+        #expect(session.connectedIdentities.isEmpty)
 
-        // Further traffic from a blocked peer is ignored, even clean messages.
-        session.handle(.received(encode(.chat(ChatPayload(text: "hi again")), sequence: 5), from: peerKey))
-        #expect(!session.chat.messages.contains { $0.text == "hi again" })
+        // Further traffic from a blocked person is ignored, even clean messages.
+        session.handle(.received(remote.sealed(.chat(ChatPayload(text: "hi again")), to: session), from: remote.key))
+        #expect(texts().isEmpty)
     }
 
-    @Test("Blocking removes their messages, excludes them from sends, and declines their invitations")
-    func manualBlock() {
-        connectAndHello()
-        session.handle(.received(encode(.chat(ChatPayload(text: "hello friend")), sequence: 2), from: peerKey))
-        session.block(identityId: remoteId)
-        #expect(!session.chat.messages.contains { $0.text == "hello friend" })
+    @Test("Blocking removes their messages, stops relaying for them, and ignores their requests")
+    func manualBlock() throws {
+        try befriend(remote)
+        session.handle(.received(remote.sealed(.chat(ChatPayload(text: "hello friend")), to: session), from: remote.key))
+        session.block(identityId: remote.id)
+        #expect(texts().isEmpty)
         #expect(session.sendChat("anyone?") == .noRecipients)
+        #expect(session.awayIdentityIds.isEmpty)
 
-        // A later invitation from the same device is declined automatically.
-        let invitationId = UUID()
-        session.handle(.invitationReceived(invitationId: invitationId, from: peerKey, displayName: "Remote"))
+        session.handle(.received(remote.sealed(.contactRequest(ContactPayload(nickname: "Remote")), to: session), from: remote.key))
         #expect(session.invitations.isEmpty)
-        #expect(transport.responses.last?.0 == invitationId)
-        #expect(transport.responses.last?.1 == false)
+        #expect(!session.discoveredPeople.contains { $0.id == remote.id })
     }
 
     @Test("Blocks persist and can be undone")
     func persistAndUnblock() throws {
-        connectAndHello()
-        session.block(peerKey)
+        link(remote)
+        session.block(identityId: remote.id)
         let person = try #require(safety.blocked.first)
-        // A new discovery of the same device stays hidden.
-        session.handle(.peerFound(peerKey, displayName: "Remote"))
-        #expect(session.nearbyPeers.isEmpty && session.connectedPeers.isEmpty)
+        session.handle(.received(remote.announce(), from: remote.key))
+        #expect(session.discoveredPeople.isEmpty)
         session.unblock(person)
         #expect(safety.blocked.isEmpty)
-        #expect(!session.connectedPeers.isEmpty)
+        clock.now += 1
+        session.handle(.received(remote.announce(), from: remote.key))
+        #expect(session.discoveredPeople.map(\.id) == [remote.id])
     }
 
     @Test("Inappropriate nicknames are shown as Player")
-    func badNicknames() {
-        session.handle(.peerFound(peerKey, displayName: "SexyBoy"))
-        #expect(session.nearbyPeers.first?.displayName == "Player")
-        session.handle(.peerStateChanged(peerKey, .connected))
-        session.handle(.received(encode(.hello(HelloPayload(nickname: "b1tch", protocolVersion: 1)), sequence: 1), from: peerKey))
-        #expect(session.connectedIdentities.first?.nickname == "Player")
+    func badNicknames() throws {
+        let rude = RemotePhone("b1tch", clock: clock)
+        link(rude)
+        #expect(session.discoveredPeople.first?.nickname == "Player")
     }
 
-    @Test("A peer this user accepted reconnects automatically after dropping")
-    func trustedReconnect() {
-        // The user invites them (that's the approval that makes them trusted).
-        session.handle(.peerFound(peerKey, displayName: "Remote"))
-        session.invite(peerKey)
-        connectAndHello()
-        let invitesBefore = transport.invited.count
-        session.handle(.peerStateChanged(peerKey, .notConnected))
-        // "Local" sorts before "Remote", so this side re-invites right away; the other side would wait.
-        #expect(transport.invited.count == invitesBefore + 1)
-        #expect(transport.invited.last == peerKey)
-
-        // Their invitation is accepted without asking again.
-        let invitationId = UUID()
-        session.handle(.invitationReceived(invitationId: invitationId, from: peerKey, displayName: "Remote"))
-        #expect(session.invitations.isEmpty)
-        #expect(transport.responses.last?.0 == invitationId)
-        #expect(transport.responses.last?.1 == true)
-    }
-
-    /// The proof the real remote phone would send: an HMAC, with the key we gave it in our
-    /// first hello, over the nonce in our latest hello.
-    private func proofFromRemote() throws -> Envelope.Payload {
-        let hellos = transport.sentEnvelopes().compactMap { envelope -> HelloPayload? in
-            if case .hello(let hello) = envelope.payload { return hello }
-            return nil
-        }
-        let firstKey = try #require(hellos.first?.nudgeKey.flatMap { Data(base64Encoded: $0) })
-        let nonce = try #require(hellos.last?.nonce)
-        let mac = HMAC<SHA256>.authenticationCode(for: ProofPayload.message(prover: remoteId, verifier: session.localId, nonce: nonce),
-                                                  using: SymmetricKey(data: firstKey))
-        return .proof(ProofPayload(mac: Data(mac).base64EncodedString()))
-    }
-
-    @Test("Someone claiming a known person's id can't take over without their key")
-    func identityTakeover() throws {
-        connectAndHello()
-        session.handle(.peerStateChanged(peerKey, .notConnected))
-        #expect(session.sendChat("private, for Remote only") == .sent)
-
-        // An impostor on another connection claims Remote's id.
-        let impostor = PeerKey()
-        session.handle(.peerFound(impostor, displayName: "Remote"))
-        session.handle(.peerStateChanged(impostor, .connected))
-        session.handle(.received(encode(.hello(HelloPayload(nickname: "Remote", protocolVersion: 1)), sequence: 10), from: impostor))
-        let fakeProof = Data(repeating: 9, count: 32).base64EncodedString()
-        session.handle(.received(encode(.proof(ProofPayload(mac: fakeProof)), sequence: 11), from: impostor))
-
-        #expect(session.connectedIdentities.isEmpty)
-        let leaked = transport.sent.filter { $0.1 == [impostor] }.compactMap { try? EnvelopeCodec.decode($0.0) }
-            .contains { $0.payload == .chat(ChatPayload(text: "private, for Remote only")) }
-        #expect(!leaked)
-    }
-
-    @Test("A huge sequence from one connection doesn't lock out the real peer")
-    func sequencePoisoning() {
-        let attacker = PeerKey()
-        session.handle(.peerStateChanged(attacker, .connected))
-        session.handle(.received(encode(.hello(HelloPayload(nickname: "Mallory", protocolVersion: 1)), sender: remoteId, sequence: 9_999_999_999_999), from: attacker))
-        session.handle(.peerStateChanged(attacker, .notConnected))
-        connectAndHello()
-        #expect(session.connectedIdentities.map(\.id) == [remoteId])
-    }
-
-    @Test("Blocking someone who is away still blocks them")
-    func blockWhileAway() {
-        connectAndHello()
-        session.handle(.received(encode(.chat(ChatPayload(text: "mean words")), sequence: 2), from: peerKey))
-        session.handle(.peerStateChanged(peerKey, .notConnected))
-        session.block(identityId: remoteId)
-        #expect(!session.chat.messages.contains { $0.text == "mean words" })
-        #expect(safety.isBlocked(identityId: remoteId))
-        #expect(session.awayIdentityIds.isEmpty)
-
-        // They come back on a new connection: ignored.
-        let again = PeerKey()
-        session.handle(.peerStateChanged(again, .connected))
-        session.handle(.received(encode(.hello(HelloPayload(nickname: "Remote", protocolVersion: 1)), sequence: 20), from: again))
-        #expect(session.connectedIdentities.isEmpty)
-    }
-
-    @Test("People brought in by someone else aren't trusted for automatic reconnection")
-    func meshPeersNotTrusted() {
-        // Connected without this user inviting or accepting them.
-        connectAndHello()
-        #expect(!session.trusted.isTrusted(transport.fingerprint(for: peerKey)))
-    }
-
-    @Test("Strangers still need approval, and Disconnect from Everyone stops auto-reconnect")
-    func untrustedNeedsApproval() {
-        let stranger = PeerKey()
-        session.handle(.invitationReceived(invitationId: UUID(), from: stranger, displayName: "Stranger"))
-        #expect(session.invitations.count == 1)
-
-        connectAndHello()
-        session.disconnectAll()
-        session.handle(.peerStateChanged(peerKey, .notConnected))
-        session.handle(.peerFound(peerKey, displayName: "Remote"))
-        #expect(transport.invited.isEmpty)
-    }
-
-    @Test("Messages sent while someone is away are held and delivered when they're back")
-    func outboxForAway() throws {
-        var queuedFor: [String] = []
-        session.onChatQueuedForAway = { ids, _, _ in queuedFor = ids }
-        connectAndHello()
-        session.handle(.peerStateChanged(peerKey, .notConnected))
-        let before = transport.sent.count
-
-        #expect(session.sendChat("see you at dinner") == .sent)
-        #expect(transport.sent.count == before)
-        #expect(queuedFor == [remoteId])
-        #expect(session.chat.messages.last?.text == "see you at dinner")
-
-        // They come back: new connection, new hello, and proof they're the same phone.
-        session.handle(.peerStateChanged(peerKey, .connected))
-        session.handle(.received(encode(.hello(HelloPayload(nickname: "Remote", protocolVersion: 1)), sequence: 2), from: peerKey))
-        session.handle(.received(encode(try proofFromRemote(), sequence: 3), from: peerKey))
-        let delivered = transport.sentEnvelopes().filter { $0.payload == .chat(ChatPayload(text: "see you at dinner")) }
-        #expect(delivered.count == 1)
-        #expect(session.chat.messages.contains { $0.text.contains("is back") })
-    }
-
-    @Test("Going to the background drops peers quietly and reports it as a local suspend")
-    func suspendAndResume() {
-        var drops: [SessionManager.DropReason] = []
-        session.onPeerDisconnected = { _, reason in drops.append(reason) }
-        session.start()
-        connectAndHello()
-        session.handle(.started)
-        session.suspend()
-        #expect(drops == [.localSuspend])
-        #expect(session.status == .idle)
-        #expect(session.connectedPeers.isEmpty)
-        #expect(session.chat.messages.last?.text.contains("disconnected") != true)
-        #expect(session.awayIdentityIds == [remoteId])
-        session.resume()
-        #expect(transport.startedName == "Local")
-    }
-
-    @Test("Invitations are surfaced and answered")
-    func invitations() throws {
-        let invitationId = UUID()
-        session.handle(.invitationReceived(invitationId: invitationId, from: peerKey, displayName: "Remote"))
-        let invitation = try #require(session.invitations.first)
-        session.respond(to: invitation, accept: false)
-        #expect(session.invitations.isEmpty)
-        #expect(transport.responses.first?.0 == invitationId)
-        #expect(transport.responses.first?.1 == false)
-    }
-
-    @Test("After a decline, that phone's next requests are declined quietly")
-    func declineMutesRequests() throws {
-        session.handle(.invitationReceived(invitationId: UUID(), from: peerKey, displayName: "Remote"))
+    @Test("Contact requests: decline mutes that person, and a crowd can't pile up requests")
+    func requestLimits() throws {
+        link(remote)
+        session.handle(.received(remote.sealed(.contactRequest(ContactPayload(nickname: "Remote")), to: session), from: remote.key))
         session.respond(to: try #require(session.invitations.first), accept: false)
-        let again = UUID()
-        session.handle(.invitationReceived(invitationId: again, from: peerKey, displayName: "Remote"))
+        session.handle(.received(remote.sealed(.contactRequest(ContactPayload(nickname: "Remote")), to: session), from: remote.key))
         #expect(session.invitations.isEmpty)
-        #expect(transport.responses.last?.0 == again)
-        #expect(transport.responses.last?.1 == false)
-    }
 
-    @Test("A crowd can't pile up requests: beyond the limit they're declined quietly")
-    func requestsAreCapped() {
-        let keys = (0...SessionManager.maxWaitingRequests).map { _ in PeerKey() }
-        for (index, key) in keys.enumerated() {
-            session.handle(.invitationReceived(invitationId: UUID(), from: key, displayName: "Person \(index)"))
+        for index in 0...SessionManager.maxWaitingRequests {
+            let phone = RemotePhone("Person \(index)", clock: clock)
+            session.handle(.received(phone.announce(), from: remote.key))
+            session.handle(.received(phone.sealed(.contactRequest(ContactPayload(nickname: phone.name)), to: session), from: remote.key))
         }
         #expect(session.invitations.count == SessionManager.maxWaitingRequests)
-        #expect(transport.responses.count == 1)
-        #expect(transport.responses.first?.1 == false)
+    }
+
+    @Test("Requests expire if nobody answers")
+    func requestExpiry() {
+        link(remote)
+        session.handle(.received(remote.sealed(.contactRequest(ContactPayload(nickname: "Remote")), to: session), from: remote.key))
+        #expect(session.invitations.count == 1)
+        clock.now += SessionManager.requestLifetime + 1
+        session.tick()
+        #expect(session.invitations.isEmpty)
+    }
+
+    @Test("Disconnect from Everyone ends every contact and tells them")
+    func disconnectEveryone() throws {
+        try befriend(remote)
+        session.disconnectAll()
+        #expect(session.knownIdentities.isEmpty)
+        #expect(remote.received(from: transport).contains { $0.kind == .contactEnd })
+        // Their messages are no longer accepted.
+        session.handle(.received(remote.sealed(.chat(ChatPayload(text: "still there?")), to: session), from: remote.key))
+        #expect(texts().isEmpty)
+    }
+
+    @Test("Link requests from other phones are accepted automatically; blocked phones are refused")
+    func linkInvitations() {
+        let invitationId = UUID()
+        session.handle(.invitationReceived(invitationId: invitationId, from: remote.key, displayName: "Remote"))
+        #expect(transport.responses.last?.0 == invitationId)
+        #expect(transport.responses.last?.1 == true)
+        #expect(session.invitations.isEmpty) // no prompt: a link isn't a contact
+
+        safety.block(fingerprint: remote.key.raw.uuidString, name: "Remote", identityId: nil)
+        let second = PeerKey()
+        _ = second
+        session.handle(.invitationReceived(invitationId: UUID(), from: remote.key, displayName: "Remote"))
+        #expect(transport.responses.last?.1 == false)
+    }
+}
+
+@Suite("Mesh packets")
+struct MeshPacketTests {
+    @Test("Ids are fingerprints of the signing key")
+    func ids() {
+        let identity = MeshIdentity()
+        #expect(MeshIdentity.isValidId(identity.id))
+        #expect(identity.id == MeshIdentity.id(for: identity.signingPublicKey))
+        #expect(MeshIdentity().id != identity.id)
+    }
+
+    @Test("Sealed for several people: each can open it, nobody else can, and the wrapped keys name no one")
+    func multiRecipient() throws {
+        let sender = MeshIdentity(), a = MeshIdentity(), b = MeshIdentity(), outsider = MeshIdentity()
+        let envelope = Envelope(senderId: sender.id, sequence: 1, payload: .chat(ChatPayload(text: "group hello")))
+        let packet = try MeshPacket.sealed(envelope, to: [(a.id, a.agreementPublicKey), (b.id, b.agreementPublicKey)], from: sender, ttl: 6)
+        try packet.verify()
+        #expect(try packet.open(as: a) == envelope)
+        #expect(try packet.open(as: b) == envelope)
+        #expect(throws: MeshPacketError.notForMe) { try packet.open(as: outsider) }
+        let wire = try packet.encoded()
+        #expect(!String(decoding: wire, as: UTF8.self).contains(a.id))
+        #expect(!String(decoding: wire, as: UTF8.self).contains("group hello"))
+    }
+
+    @Test("Saved keys restore the same identity")
+    func restore() throws {
+        let identity = MeshIdentity()
+        let restored = try #require(MeshIdentity(signing: identity.signingKey.rawRepresentation, agreement: identity.agreementKey.rawRepresentation))
+        #expect(restored.id == identity.id)
+    }
+
+    @Test("Oversized or malformed packets are rejected")
+    func bounds() {
+        #expect(throws: MeshPacketError.self) { try MeshPacket.decode(Data(repeating: 0x7B, count: MeshPacket.maxPacketBytes + 1)) }
+        #expect(throws: MeshPacketError.self) { try MeshPacket.decode(Data("{}".utf8)) }
     }
 }

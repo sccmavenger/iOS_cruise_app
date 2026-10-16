@@ -64,14 +64,12 @@ nonisolated enum EnvelopeCodec {
         switch envelope.payload {
         case .hello(let hello):
             guard Nickname.sanitize(hello.nickname) != nil else { throw .invalidField("nickname") }
-            if let key = hello.nudgeKey {
-                guard key.count <= 64, Data(base64Encoded: key)?.count == 32 else { throw .invalidField("nudgeKey") }
-            }
-            if let nonce = hello.nonce {
-                guard nonce.count <= 32, Data(base64Encoded: nonce)?.count == 16 else { throw .invalidField("nonce") }
-            }
-        case .proof(let proof):
-            guard proof.mac.count <= 64, Data(base64Encoded: proof.mac)?.count == 32 else { throw .invalidField("proof") }
+        case .announce(let announce):
+            guard Nickname.sanitize(announce.nickname) != nil else { throw .invalidField("nickname") }
+        case .contactRequest(let contact), .contactAccept(let contact):
+            guard Nickname.sanitize(contact.nickname) != nil else { throw .invalidField("nickname") }
+        case .keys(let keys):
+            guard keys.nudgeKey.count <= 64, Data(base64Encoded: keys.nudgeKey)?.count == 32 else { throw .invalidField("nudgeKey") }
         case .chat(let chat):
             let trimmed = chat.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, chat.text.count <= maxChatCharacters else {
@@ -108,7 +106,7 @@ nonisolated enum EnvelopeCodec {
             guard error.code.count <= 64, error.message.count <= maxMessageLength else {
                 throw .invalidField("error")
             }
-        case .joinRequest, .joinReject, .ready, .rematchRequest, .leave, .heartbeat, .presence:
+        case .joinRequest, .joinReject, .ready, .rematchRequest, .leave, .heartbeat, .presence, .contactEnd:
             break
         }
     }
@@ -148,7 +146,11 @@ extension Envelope: Codable {
         case .error: payload = .error(try container.decode(ErrorPayload.self, forKey: .payload))
         case .heartbeat: payload = .heartbeat(try container.decode(EmptyPayload.self, forKey: .payload))
         case .presence: payload = .presence(try container.decode(PresencePayload.self, forKey: .payload))
-        case .proof: payload = .proof(try container.decode(ProofPayload.self, forKey: .payload))
+        case .announce: payload = .announce(try container.decode(AnnouncePayload.self, forKey: .payload))
+        case .contactRequest: payload = .contactRequest(try container.decode(ContactPayload.self, forKey: .payload))
+        case .contactAccept: payload = .contactAccept(try container.decode(ContactPayload.self, forKey: .payload))
+        case .keys: payload = .keys(try container.decode(KeysPayload.self, forKey: .payload))
+        case .contactEnd: payload = .contactEnd(try container.decode(EmptyPayload.self, forKey: .payload))
         }
     }
 
@@ -177,7 +179,11 @@ extension Envelope: Codable {
         case .error(let value): try container.encode(value, forKey: .payload)
         case .heartbeat(let value): try container.encode(value, forKey: .payload)
         case .presence(let value): try container.encode(value, forKey: .payload)
-        case .proof(let value): try container.encode(value, forKey: .payload)
+        case .announce(let value): try container.encode(value, forKey: .payload)
+        case .contactRequest(let value): try container.encode(value, forKey: .payload)
+        case .contactAccept(let value): try container.encode(value, forKey: .payload)
+        case .keys(let value): try container.encode(value, forKey: .payload)
+        case .contactEnd(let value): try container.encode(value, forKey: .payload)
         }
     }
 }

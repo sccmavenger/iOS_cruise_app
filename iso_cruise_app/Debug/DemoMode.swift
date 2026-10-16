@@ -44,6 +44,11 @@ final class DemoMode {
         connect(mia.session, leo.session)
         connect(mia.session, ava.session)
         connect(leo.session, ava.session)
+        // Linked phones aren't contacts until one asks and the other accepts.
+        for friend in [mia, leo, ava] { befriend(session, friend.session) }
+        befriend(mia.session, leo.session)
+        befriend(mia.session, ava.session)
+        befriend(leo.session, ava.session)
         await pause()
 
         switch scene {
@@ -118,7 +123,7 @@ final class DemoMode {
         let profile = ProfileStore(defaults: defaults)
         _ = profile.setNickname(name)
         let transport = LoopTransport()
-        let session = SessionManager(transport: transport, profile: profile, safety: SafetyStore(defaults: defaults), trusted: TrustedPeersStore(defaults: defaults))
+        let session = SessionManager(transport: transport, profile: profile, safety: SafetyStore(defaults: defaults))
         transport.network = self
         transport.owner = session
         let friend = Friend(session: session, games: GameCoordinator(session: session))
@@ -134,6 +139,13 @@ final class DemoMode {
         b.handle(.peerFound(keyForA, displayName: a.profile.nickname ?? ""))
         a.handle(.peerStateChanged(keyForB, .connected))
         b.handle(.peerStateChanged(keyForA, .connected))
+    }
+
+    private func befriend(_ a: SessionManager, _ b: SessionManager) {
+        a.requestContact(b.localId)
+        if let request = b.invitations.first(where: { $0.from == a.localId }) {
+            b.respond(to: request, accept: true)
+        }
     }
 
     fileprivate func deliver(_ data: Data, from sender: SessionManager, to key: PeerKey) {

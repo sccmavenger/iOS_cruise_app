@@ -61,8 +61,8 @@ struct OnboardingView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 14) {
-                    FeatureRow(symbol: "wifi.slash", title: "Works offline", detail: "Connects directly to nearby iPhones over Wi-Fi or Bluetooth.")
-                    FeatureRow(symbol: "lock.fill", title: "Private by design", detail: "Encrypted links, no accounts, no cloud. Messages vanish when you quit.")
+                    FeatureRow(symbol: "wifi.slash", title: "Works offline", detail: "Connects to nearby iPhones over Wi-Fi or Bluetooth, and other phones running CruiseLAN pass messages along to reach further.")
+                    FeatureRow(symbol: "lock.fill", title: "Private by design", detail: "End-to-end encrypted, no accounts, no cloud. Only people you accept can message you. Messages vanish when you quit.")
                     FeatureRow(symbol: "gamecontroller.fill", title: "Play together", detail: "Chess, Checkers, Color Match, Connect Four, and Tic-Tac-Toe.")
                 }
 
@@ -81,8 +81,11 @@ struct OnboardingView: View {
                 withAnimation { proxy.scrollTo("nickname", anchor: .center) }
             }
         }
-        // Pinned above the keyboard so it's always reachable while typing.
-        .safeAreaInset(edge: .bottom) {
+        // Content scrolling under the status bar is blurred rather than showing through it.
+        .scrollEdgeEffectStyle(.soft, for: .top)
+        // Pinned above the keyboard so it's always reachable while typing. As a bar, it gets the
+        // system scroll edge effect, so text scrolling behind the button is blurred, not legible.
+        .safeAreaBar(edge: .bottom) {
             Button(action: save) {
                 Text("Get Started")
                     .font(.headline)

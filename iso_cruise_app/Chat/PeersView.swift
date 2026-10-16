@@ -1,19 +1,19 @@
 import SwiftUI
 import UIKit
 
-/// Lists connected and discovered peers, lets the user invite people, and explains
-/// what to check when nobody shows up.
+/// Contacts (connected and away), contact requests, and people on the mesh who can be
+/// asked to connect, plus what to check when nobody shows up.
 struct PeersView: View {
     @Environment(SessionManager.self) private var session
     @Environment(AppState.self) private var app
     @Environment(GameCoordinator.self) private var games
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
-    /// Ticks every few seconds so the troubleshooting tips can appear after a delay.
+    /// Ticks every few seconds so "nearby" ages out and troubleshooting tips can appear after a delay.
     @State private var clock = Date.now
     @State private var reportTarget: ReportTarget?
 
-    /// Seconds without any peer before troubleshooting tips appear.
+    /// Seconds without anyone before troubleshooting tips appear.
     private static let troubleshootingDelay: TimeInterval = 20
 
     var body: some View {
@@ -35,39 +35,27 @@ struct PeersView: View {
                     } header: {
                         Text("Requests")
                     } footer: {
-                        Text("Only accept people you recognize. Names aren't verified. If you decline, that phone can't ask again for 10 minutes.")
+                        Text("Only accept people you recognize. Names aren't verified, but the tag after a name (like #A1B2) can't be faked: check it with them. If you decline, they can't ask again for 10 minutes.")
                     }
                 }
 
                 Section("Connected") {
-                    if session.connectedPeers.isEmpty {
+                    if session.connectedIdentities.isEmpty {
                         Text("No one yet")
                             .foregroundStyle(.secondary)
                     }
-                    ForEach(session.connectedPeers) { peer in
-                        PeerRow(peer: peer, trailing: .connected)
+                    ForEach(session.connectedIdentities, id: \.id) { identity in
+                        ContactRow(identity: identity, isAway: false, hops: session.directory[identity.id]?.hops)
                             .swipeActions {
                                 Button("Block", systemImage: "hand.raised", role: .destructive) {
-                                    session.block(peer.key)
+                                    session.block(identityId: identity.id)
                                 }
-                                if let identity = peer.identity {
-                                    Button("Message", systemImage: "bubble.left") { message(identity) }
-                                        .tint(Theme.teal)
-                                }
+                                Button("Message", systemImage: "bubble.left") { message(identity) }
+                                    .tint(Theme.teal)
                             }
-                            .contextMenu {
-                                if let identity = peer.identity {
-                                    Button("Message", systemImage: "bubble.left") { message(identity) }
-                                    Button("Report…", systemImage: "exclamationmark.bubble") {
-                                        reportTarget = ReportTarget(identityId: identity.id, name: identity.nickname, message: nil)
-                                    }
-                                }
-                                Button("Block", systemImage: "hand.raised", role: .destructive) {
-                                    session.block(peer.key)
-                                }
-                            }
+                            .contextMenu { contactMenu(identity) }
                     }
-                    if !session.connectedPeers.isEmpty {
+                    if !session.knownIdentities.isEmpty {
                         Button("Disconnect from Everyone", role: .destructive) {
                             // Leave any game properly first, so others aren't left waiting for us.
                             if games.lobby != nil { games.leave() }
@@ -80,67 +68,54 @@ struct PeersView: View {
                 if !away.isEmpty {
                     Section {
                         ForEach(away, id: \.id) { identity in
-                            HStack(spacing: 12) {
-                                Image(systemName: "moon.zzz.fill")
-                                    .font(.title3)
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 32)
-                                    .accessibilityHidden(true)
-                                Text(identity.labeledName)
-                                Spacer()
-                                Text("Away")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .accessibilityElement(children: .combine)
-                            .swipeActions {
-                                Button("Block", systemImage: "hand.raised", role: .destructive) {
-                                    session.block(identityId: identity.id)
+                            ContactRow(identity: identity, isAway: true, hops: nil)
+                                .swipeActions {
+                                    Button("Block", systemImage: "hand.raised", role: .destructive) {
+                                        session.block(identityId: identity.id)
+                                    }
+                                    Button("Message", systemImage: "bubble.left") { message(identity) }
+                                        .tint(Theme.teal)
                                 }
-                                Button("Message", systemImage: "bubble.left") { message(identity) }
-                                    .tint(Theme.teal)
-                            }
-                            .contextMenu {
-                                Button("Message", systemImage: "bubble.left") { message(identity) }
-                                Button("Report…", systemImage: "exclamationmark.bubble") {
-                                    reportTarget = ReportTarget(identityId: identity.id, name: identity.nickname, message: nil)
-                                }
-                                Button("Block", systemImage: "hand.raised", role: .destructive) {
-                                    session.block(identityId: identity.id)
-                                }
-                            }
+                                .contextMenu { contactMenu(identity) }
                         }
                     } header: {
                         Text("Away")
                     } footer: {
-                        Text("They switched apps, locked their phone, or moved out of range. They reconnect automatically when they're back. Messages you send are held for them, and nearby phones get a notification over Bluetooth.")
+                        Text("They switched apps, locked their phone, or are out of reach. They reconnect automatically when they're back. Messages you send are held for them, and nearby phones get a notification over Bluetooth.")
                     }
                 }
 
                 Section {
-                    if session.nearbyPeers.isEmpty {
+                    let people = session.discoveredPeople
+                    if people.isEmpty {
                         Text("Looking for people…")
                             .foregroundStyle(.secondary)
                     }
-                    ForEach(session.nearbyPeers) { peer in
+                    ForEach(people) { person in
+                        let waiting = session.isRequested(person.id)
                         Button {
-                            session.invite(peer.key)
+                            session.requestContact(person.id)
                         } label: {
-                            PeerRow(peer: peer, trailing: peer.isInvited || peer.connection == .connecting ? .waiting : .invite)
+                            MeshPersonRow(person: person, isWaiting: waiting)
                         }
-                        .disabled(peer.isInvited || peer.connection == .connecting)
-                        .accessibilityHint("Sends a connection request")
+                        .disabled(waiting)
+                        .accessibilityHint("Sends a request to connect")
+                        .contextMenu {
+                            Button("Block", systemImage: "hand.raised", role: .destructive) {
+                                session.block(identityId: person.id)
+                            }
+                        }
                     }
                 } header: {
                     HStack {
-                        Text("Nearby")
+                        Text("People on CruiseLAN")
                         Spacer()
                         ProgressView()
                             .controlSize(.small)
                             .accessibilityLabel("Searching")
                     }
                 } footer: {
-                    Text("Only people running CruiseLAN appear here. They must accept your request before you can chat. Swipe left on someone you're connected to for a private chat, or to block them.")
+                    Text("Phones running CruiseLAN pass messages along for each other, so you can reach people further away than your phone can. They can't read your messages: only you and the people you're talking to can. Tap someone to ask to connect; you can chat once they accept.")
                 }
 
                 if shouldShowTroubleshooting(at: clock) {
@@ -168,6 +143,17 @@ struct PeersView: View {
         }
     }
 
+    @ViewBuilder
+    private func contactMenu(_ identity: PeerIdentity) -> some View {
+        Button("Message", systemImage: "bubble.left") { message(identity) }
+        Button("Report…", systemImage: "exclamationmark.bubble") {
+            reportTarget = ReportTarget(identityId: identity.id, name: identity.nickname, message: nil)
+        }
+        Button("Block", systemImage: "hand.raised", role: .destructive) {
+            session.block(identityId: identity.id)
+        }
+    }
+
     /// Opens (or starts) a one-on-one chat.
     private func message(_ identity: PeerIdentity) {
         let conversation = session.directConversation(with: identity)
@@ -176,12 +162,87 @@ struct PeersView: View {
     }
 
     private func shouldShowTroubleshooting(at date: Date) -> Bool {
-        guard session.connectedPeers.isEmpty, session.nearbyPeers.isEmpty else { return false }
+        _ = date
+        guard session.connectedIdentities.isEmpty, session.discoveredPeople.isEmpty else { return false }
         switch session.status {
         case .running(let since): return date.timeIntervalSince(since) > Self.troubleshootingDelay
         case .failed: return true
         case .idle: return false
         }
+    }
+}
+
+/// How far someone is, in words.
+private func distanceText(hops: Int?) -> String? {
+    guard let hops else { return nil }
+    switch hops {
+    case 0: return "Nearby"
+    case 1: return "Through 1 phone"
+    default: return "Through \(hops) phones"
+    }
+}
+
+struct ContactRow: View {
+    let identity: PeerIdentity
+    let isAway: Bool
+    let hops: Int?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: isAway ? "moon.zzz.fill" : "person.crop.circle.fill")
+                .font(.title3)
+                .foregroundStyle(isAway ? AnyShapeStyle(.secondary) : AnyShapeStyle(Theme.teal))
+                .frame(width: 32)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(identity.labeledName)
+                if !isAway, let distance = distanceText(hops: hops) {
+                    Text(distance)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if isAway {
+                Text("Away")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                Label("Connected", systemImage: "checkmark.circle.fill")
+                    .labelStyle(.iconOnly)
+                    .foregroundStyle(.green)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+struct MeshPersonRow: View {
+    let person: SessionManager.MeshPerson
+    let isWaiting: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: person.hops == 0 ? "iphone.gen3.radiowaves.left.and.right" : "point.3.connected.trianglepath.dotted")
+                .font(.title3)
+                .foregroundStyle(Theme.teal)
+                .frame(width: 32)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(person.labeledName)
+                    .foregroundStyle(.primary)
+                if let distance = distanceText(hops: person.hops) {
+                    Text(distance)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            Text(isWaiting ? "Waiting…" : "Invite")
+                .font(.subheadline.weight(isWaiting ? .regular : .semibold))
+                .foregroundStyle(isWaiting ? AnyShapeStyle(.secondary) : AnyShapeStyle(Theme.teal))
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -200,7 +261,7 @@ struct RequestRow: View {
                     .frame(width: 32)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(invitation.displayName)
+                    Text(invitation.labeledName)
                     Text("Wants to connect")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -225,41 +286,6 @@ struct RequestRow: View {
     }
 }
 
-struct PeerRow: View {
-    enum Trailing { case connected, invite, waiting }
-
-    let peer: SessionManager.RemotePeer
-    let trailing: Trailing
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "iphone.gen3.radiowaves.left.and.right")
-                .font(.title3)
-                .foregroundStyle(Theme.teal)
-                .frame(width: 32)
-                .accessibilityHidden(true)
-            Text(peer.shownName)
-                .foregroundStyle(.primary)
-            Spacer()
-            switch trailing {
-            case .connected:
-                Label("Connected", systemImage: "checkmark.circle.fill")
-                    .labelStyle(.iconOnly)
-                    .foregroundStyle(.green)
-            case .invite:
-                Text("Invite")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Theme.teal)
-            case .waiting:
-                Text("Waiting…")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .accessibilityElement(children: .combine)
-    }
-}
-
 /// Honest guidance for networks where discovery doesn't work.
 struct TroubleshootingSection: View {
     let openSettings: () -> Void
@@ -269,7 +295,7 @@ struct TroubleshootingSection: View {
             TipRow(symbol: "hand.raised.fill", text: "Make sure Local Network access is on: Settings › Privacy & Security › Local Network › CruiseLAN.")
             Button("Open CruiseLAN Settings", action: openSettings)
             TipRow(symbol: "wifi", text: "Keep Wi-Fi and Bluetooth turned on (you don't need to join a network). Stay close to each other.")
-            TipRow(symbol: "app.badge", text: "The other person must have CruiseLAN open in the foreground.")
+            TipRow(symbol: "app.badge", text: "The other person must have CruiseLAN open in the foreground. Anyone with CruiseLAN open in between helps pass messages along.")
             TipRow(symbol: "ferry", text: "Some ship and hotel Wi-Fi networks block devices from seeing each other. If you're joined to one, try turning Wi-Fi off and on, or moving closer together.")
         }
     }

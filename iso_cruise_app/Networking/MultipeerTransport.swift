@@ -3,21 +3,30 @@ import Foundation
 import MultipeerConnectivity
 import os
 
-/// `PeerTransport` backed by MultipeerConnectivity.
+/// `PeerTransport` backed by MultipeerConnectivity, with one `MCSession` per link.
+///
+/// A single `MCSession` connects everyone in it to everyone else and holds at most 8
+/// phones, so a group of friends could never grow past 8, and anyone one person linked
+/// to was linked to all of them. Here every link between two phones is its own two-phone
+/// session, so this phone picks its own neighbors (up to `maxLinks`), and the mesh
+/// layer (`SessionManager`) relays messages further than radio range.
 ///
 /// MultipeerConnectivity calls its delegates on private background queues, so this class
-/// is `nonisolated`; all mutable state lives behind a `Mutex`, and events are forwarded
-/// in order through an `AsyncStream` for the main-actor session layer to consume.
+/// is `nonisolated`; all mutable state lives behind a lock, and events are forwarded in
+/// order through an `AsyncStream` for the main-actor session layer to consume.
 nonisolated final class MultipeerTransport: NSObject, PeerTransport, @unchecked Sendable {
     /// Bonjour service type. Must match `NSBonjourServices` (`_cruiselan._tcp` / `_udp`).
     static let serviceType = "cruiselan"
-    static let protocolVersion = "1"
-    /// How long a connection request waits for an answer. Requests sit quietly in People
-    /// rather than popping up, so they get a minute to be noticed.
-    static let invitationTimeout: TimeInterval = 60
+    /// "2": the mesh protocol. Phones on older builds aren't found or linked.
+    static let protocolVersion = "2"
+    /// How long a link invitation waits for an answer. Links are accepted automatically,
+    /// so this only bounds a stalled attempt.
+    static let invitationTimeout: TimeInterval = 15
     static let maxPendingInvitations = 5
-    /// MultipeerConnectivity sessions support at most 8 peers including the local one.
-    static let maxSessionPeers = kMCSessionMaximumNumberOfPeers - 1
+    /// Most links this phone keeps at once. More links make the mesh sturdier but use more
+    /// radio time and battery; testing other MultipeerConnectivity meshes found several
+    /// concurrent sessions reliable, and relays reach everyone else.
+    static let maxLinks = 5
 
     private static let logger = Logger(subsystem: "com.dannyguillory.cruiselan", category: "transport")
 
@@ -31,16 +40,13 @@ nonisolated final class MultipeerTransport: NSObject, PeerTransport, @unchecked 
 
     nonisolated private struct State {
         var localPeer: MCPeerID?
-        var session: MCSession?
         var advertiser: MCNearbyServiceAdvertiser?
         var browser: MCNearbyServiceBrowser?
         var keysByPeer: [MCPeerID: PeerKey] = [:]
         var peersByKey: [PeerKey: MCPeerID] = [:]
         var pendingInvitations: [UUID: PendingInvitation] = [:]
-        /// Peers the current session reports as connecting.
-        var connectingPeers: Set<MCPeerID> = []
-        /// Invitations this phone sent on the current session, by when they expire.
-        var outgoingInvites: [MCPeerID: Date] = [:]
+        /// The two-phone session for each link, connecting or connected.
+        var links: [MCPeerID: MCSession] = [:]
     }
 
     private let state = LockedState(State())
@@ -48,7 +54,7 @@ nonisolated final class MultipeerTransport: NSObject, PeerTransport, @unchecked 
 
     init(peerIDStore: PeerIDStore = PeerIDStore()) {
         self.peerIDStore = peerIDStore
-        (events, continuation) = AsyncStream.makeStream(of: TransportEvent.self, bufferingPolicy: .bufferingNewest(512))
+        (events, continuation) = AsyncStream.makeStream(of: TransportEvent.self, bufferingPolicy: .bufferingNewest(1024))
         super.init()
     }
 
@@ -62,9 +68,6 @@ nonisolated final class MultipeerTransport: NSObject, PeerTransport, @unchecked 
         stop()
 
         let peerID = peerIDStore.peerID(for: displayName)
-        let session = MCSession(peer: peerID, securityIdentity: nil, encryptionPreference: .required)
-        session.delegate = self
-
         let advertiser = MCNearbyServiceAdvertiser(
             peer: peerID,
             discoveryInfo: ["v": Self.protocolVersion],
@@ -77,7 +80,6 @@ nonisolated final class MultipeerTransport: NSObject, PeerTransport, @unchecked 
 
         state.withLock {
             $0.localPeer = peerID
-            $0.session = session
             $0.advertiser = advertiser
             $0.browser = browser
         }
@@ -89,14 +91,17 @@ nonisolated final class MultipeerTransport: NSObject, PeerTransport, @unchecked 
     }
 
     func stop() {
-        let (session, advertiser, browser, pending) = state.withLock { state in
-            let result = (state.session, state.advertiser, state.browser, state.pendingInvitations)
+        let (links, advertiser, browser, pending) = state.withLock { state in
+            let result = (Array(state.links.values), state.advertiser, state.browser, state.pendingInvitations)
             state = State()
             return result
         }
         advertiser?.stopAdvertisingPeer()
         browser?.stopBrowsingForPeers()
-        session?.disconnect()
+        for session in links {
+            session.delegate = nil
+            session.disconnect()
+        }
         for invitation in pending.values {
             invitation.handler(false, nil)
         }
@@ -105,17 +110,21 @@ nonisolated final class MultipeerTransport: NSObject, PeerTransport, @unchecked 
     @discardableResult
     func invite(_ peer: PeerKey) -> Bool {
         let target: (MCNearbyServiceBrowser, MCPeerID, MCSession, MCSession?)? = state.withLock { state in
-            guard let browser = state.browser,
+            guard let browser = state.browser, let localPeer = state.localPeer,
                   let peerID = state.peersByKey[peer]
             else { return nil }
-            let replaced = freshSessionIfIdle(&state, ignoringInviteTo: peerID)
-            guard let session = state.session, session.connectedPeers.count < Self.maxSessionPeers else { return nil }
-            state.outgoingInvites[peerID] = Date.now.addingTimeInterval(Self.invitationTimeout)
-            return (browser, peerID, session, replaced)
+            // A stalled attempt to the same phone is replaced; otherwise respect the link limit.
+            let previous = state.links[peerID]
+            if let previous, previous.connectedPeers.contains(peerID) { return nil }
+            guard previous != nil || state.links.count < Self.maxLinks else { return nil }
+            let session = self.makeSession(localPeer)
+            state.links[peerID] = session
+            return (browser, peerID, session, previous)
         }
-        guard let (browser, peerID, session, replaced) = target else { return false }
-        replaced?.disconnect()
-        DebugTrace.log("transport invite \(peerID.displayName) freshSession=\(replaced != nil)")
+        guard let (browser, peerID, session, previous) = target else { return false }
+        previous?.delegate = nil
+        previous?.disconnect()
+        DebugTrace.log("transport invite \(peerID.displayName)")
         let context = try? JSONEncoder().encode(InvitationContext(v: Self.protocolVersion))
         browser.invitePeer(peerID, to: session, withContext: context, timeout: Self.invitationTimeout)
         return true
@@ -124,36 +133,48 @@ nonisolated final class MultipeerTransport: NSObject, PeerTransport, @unchecked 
     func respond(toInvitation invitationId: UUID, accept: Bool) {
         let resolved: (PendingInvitation, MCSession?, MCSession?)? = state.withLock { state in
             guard let pending = state.pendingInvitations.removeValue(forKey: invitationId) else { return nil }
-            let replaced = accept ? freshSessionIfIdle(&state, ignoringInviteTo: nil) : nil
-            return (pending, state.session, replaced)
+            guard accept, let localPeer = state.localPeer else { return (pending, nil, nil) }
+            let previous = state.links[pending.peerID]
+            if let previous, previous.connectedPeers.contains(pending.peerID) { return (pending, nil, nil) }
+            guard previous != nil || state.links.count < Self.maxLinks else { return (pending, nil, nil) }
+            let session = self.makeSession(localPeer)
+            state.links[pending.peerID] = session
+            return (pending, session, previous)
         }
-        guard let (pending, session, replaced) = resolved else { return }
-        replaced?.disconnect()
-        DebugTrace.log("transport respond \(pending.peerID.displayName) accept=\(accept) freshSession=\(replaced != nil) sessionPeers=\(session?.connectedPeers.count ?? -1)")
-        if accept, let session, session.connectedPeers.count < Self.maxSessionPeers {
-            pending.handler(true, session)
-        } else {
-            pending.handler(false, nil)
-        }
+        guard let (pending, session, previous) = resolved else { return }
+        previous?.delegate = nil
+        previous?.disconnect()
+        DebugTrace.log("transport respond \(pending.peerID.displayName) accept=\(session != nil)")
+        pending.handler(session != nil, session)
     }
 
     func send(_ data: Data, to peers: [PeerKey]) throws {
-        let (session, recipients) = state.withLock { state in
-            (state.session, peers.compactMap { state.peersByKey[$0] })
+        let targets: [(MCSession, MCPeerID)] = state.withLock { state in
+            peers.compactMap { key in
+                guard let peerID = state.peersByKey[key], let session = state.links[peerID],
+                      session.connectedPeers.contains(peerID)
+                else { return nil }
+                return (session, peerID)
+            }
         }
-        guard let session else { throw TransportError.notRunning }
-        let connected = recipients.filter { session.connectedPeers.contains($0) }
-        guard !connected.isEmpty else { throw TransportError.noRecipients }
-        do {
-            try session.send(data, toPeers: connected, with: .reliable)
-        } catch {
-            throw TransportError.sendFailed(error.localizedDescription)
+        guard !targets.isEmpty else { throw TransportError.noRecipients }
+        var failure: String?
+        for (session, peerID) in targets {
+            do {
+                try session.send(data, toPeers: [peerID], with: .reliable)
+            } catch {
+                failure = error.localizedDescription
+            }
         }
+        if let failure, targets.count == 1 { throw TransportError.sendFailed(failure) }
     }
 
     func disconnectAll() {
-        let session = state.withLock { $0.session }
-        session?.disconnect()
+        let links = state.withLock { state -> [MCSession] in
+            defer { state.links.removeAll() }
+            return Array(state.links.values)
+        }
+        for session in links { session.disconnect() }
     }
 
     /// SHA-256 of the remote `MCPeerID`'s archived form. Peers reuse their archived
@@ -168,18 +189,17 @@ nonisolated final class MultipeerTransport: NSObject, PeerTransport, @unchecked 
 
     // MARK: - Helpers
 
-    /// Most distinct peers remembered per run; beyond this, ones not in the session are dropped.
+    /// Most distinct peers remembered per run; beyond this, ones without a link are dropped.
     /// (Browsers report peers as lost and found constantly, so keys must stay stable for any
     /// normal number of peers; this only matters if a device cycles through many peer ids.)
-    private static let maxRememberedPeers = 256
+    private static let maxRememberedPeers = 512
 
     /// Returns the stable local key for a remote `MCPeerID`, creating one on first sight.
     private func key(for peerID: MCPeerID) -> PeerKey {
         state.withLock { state in
             if let existing = state.keysByPeer[peerID] { return existing }
             if state.keysByPeer.count >= Self.maxRememberedPeers {
-                let connected = Set(state.session?.connectedPeers ?? [])
-                for stale in state.keysByPeer.keys where !connected.contains(stale) {
+                for stale in state.keysByPeer.keys where state.links[stale] == nil {
                     if let staleKey = state.keysByPeer.removeValue(forKey: stale) { state.peersByKey[staleKey] = nil }
                 }
             }
@@ -190,30 +210,15 @@ nonisolated final class MultipeerTransport: NSObject, PeerTransport, @unchecked 
         }
     }
 
-    /// Swaps in a new, empty `MCSession` when the current one has nobody connected and
-    /// nothing in progress, and returns the old one for the caller to disconnect.
-    ///
-    /// A session that a peer dropped out of (for example, when their app went to the
-    /// background) often can't take that same peer back: invitations sit unanswered or fail
-    /// even though both phones see each other. A fresh session per reconnection avoids that.
-    /// `ignoringInviteTo` is the peer about to be invited; an earlier invite to it is superseded.
-    private func freshSessionIfIdle(_ state: inout State, ignoringInviteTo peerID: MCPeerID?) -> MCSession? {
-        guard let old = state.session, let localPeer = state.localPeer,
-              old.connectedPeers.isEmpty, state.connectingPeers.isEmpty
-        else { return nil }
-        let now = Date.now
-        let othersInvited = state.outgoingInvites.contains { $0.key != peerID && $0.value > now }
-        guard !othersInvited else { return nil }
+    private func makeSession(_ localPeer: MCPeerID) -> MCSession {
         let session = MCSession(peer: localPeer, securityIdentity: nil, encryptionPreference: .required)
         session.delegate = self
-        old.delegate = nil
-        state.session = session
-        state.outgoingInvites.removeAll()
-        return old
+        return session
     }
 
-    private func isCurrent(session: MCSession) -> Bool {
-        state.withLock { $0.session === session }
+    /// Whether `session` is the current link to `peerID` (not a replaced or stray one).
+    private func isLink(_ session: MCSession, to peerID: MCPeerID) -> Bool {
+        state.withLock { $0.links[peerID] === session }
     }
 
     private func expireInvitation(_ invitationId: UUID) {
@@ -250,18 +255,19 @@ nonisolated private struct InvitationContext: Codable {
 
 extension MultipeerTransport: MCSessionDelegate {
     func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
+        // Each link session holds exactly one other phone; anything else is stray.
         let current = self.state.withLock { locked -> Bool in
-            guard locked.session === session else { return false }
-            if state == .connecting {
-                locked.connectingPeers.insert(peerID)
-            } else {
-                locked.connectingPeers.remove(peerID)
-                locked.outgoingInvites[peerID] = nil
-            }
+            guard locked.links[peerID] === session else { return false }
+            if state == .notConnected { locked.links[peerID] = nil }
             return true
         }
         DebugTrace.log("transport state \(peerID.displayName) -> \(state.rawValue) current=\(current)")
-        guard current else { return }
+        guard current else {
+            // A session someone else's phone pulled us into, or one we replaced: don't keep it.
+            if state == .connected, !isLink(session, to: peerID) { session.disconnect() }
+            return
+        }
+        if state == .notConnected { session.disconnect() }
         let mapped: PeerConnectionState = switch state {
         case .connected: .connected
         case .connecting: .connecting
@@ -272,9 +278,9 @@ extension MultipeerTransport: MCSessionDelegate {
     }
 
     func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
-        guard isCurrent(session: session) else { return }
+        guard isLink(session, to: peerID) else { return }
         // Drop oversized frames before they reach the decoder.
-        guard data.count <= EnvelopeCodec.maxEnvelopeBytes else {
+        guard data.count <= MeshPacket.maxPacketBytes else {
             Self.logger.notice("Dropped oversized frame (\(data.count, privacy: .public) bytes)")
             return
         }
@@ -297,8 +303,8 @@ extension MultipeerTransport: MCSessionDelegate {
     }
 
     func session(_ session: MCSession, didReceiveCertificate certificate: [Any]?, fromPeer peerID: MCPeerID, certificateHandler: @escaping (Bool) -> Void) {
-        // No identity certificates are used; the link is still encrypted (`.required`).
-        // Peer identity is unauthenticated by design (see 02-TECHNICAL-SPEC "Security and privacy").
+        // No transport certificates: the link is still encrypted (`.required`), and every
+        // packet on it is signed end to end by its sender (see `MeshPacket`).
         certificateHandler(true)
     }
 }

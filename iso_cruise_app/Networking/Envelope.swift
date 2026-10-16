@@ -7,7 +7,8 @@ import Foundation
 /// typed payload. The `kind` field is redundant with the payload case but is required by
 /// the protocol contract; the decoder rejects envelopes where they disagree.
 nonisolated struct Envelope: Equatable, Sendable {
-    static let currentVersion = 1
+    /// 2: mesh. Envelopes travel inside signed `MeshPacket`s; older builds can't talk to this one.
+    static let currentVersion = 2
 
     var version: Int
     var id: UUID
@@ -53,8 +54,16 @@ nonisolated struct Envelope: Equatable, Sendable {
         case heartbeat
         /// "I'm stepping away" (app going to the background) so peers show "away", not "disconnected".
         case presence
-        /// Proves a returning identity holds the key it was given last time (see `ProofPayload`).
-        case proof
+        /// Mesh: "I'm here", flooded every few seconds so everyone can find everyone (public).
+        case announce
+        /// Mesh: asks to become contacts. Only contacts can chat or play together.
+        case contactRequest
+        /// Mesh: accepts a contact request.
+        case contactAccept
+        /// A fresh key for Bluetooth nudges between two contacts (see `KeysPayload`).
+        case keys
+        /// The sender stopped being contacts ("Disconnect from Everyone").
+        case contactEnd
     }
 
     enum Payload: Equatable, Sendable {
@@ -74,7 +83,11 @@ nonisolated struct Envelope: Equatable, Sendable {
         case error(ErrorPayload)
         case heartbeat(EmptyPayload)
         case presence(PresencePayload)
-        case proof(ProofPayload)
+        case announce(AnnouncePayload)
+        case contactRequest(ContactPayload)
+        case contactAccept(ContactPayload)
+        case keys(KeysPayload)
+        case contactEnd(EmptyPayload)
 
         var kind: Kind {
             switch self {
@@ -94,7 +107,11 @@ nonisolated struct Envelope: Equatable, Sendable {
             case .error: .error
             case .heartbeat: .heartbeat
             case .presence: .presence
-            case .proof: .proof
+            case .announce: .announce
+            case .contactRequest: .contactRequest
+            case .contactAccept: .contactAccept
+            case .keys: .keys
+            case .contactEnd: .contactEnd
             }
         }
     }
@@ -104,32 +121,30 @@ nonisolated struct Envelope: Equatable, Sendable {
 
 nonisolated struct EmptyPayload: Codable, Equatable, Sendable {}
 
+/// First packet on a new link between two phones (not relayed): who's on the other end.
+/// The packet around it carries the sender's keys and signature (see `MeshPacket`).
 nonisolated struct HelloPayload: Codable, Equatable, Sendable {
     /// Sanitized nickname the peer wants to be shown as.
     var nickname: String
     /// Protocol version the peer speaks, so incompatible builds can be told apart.
     var protocolVersion: Int
-    /// A fresh random key (base64, 32 bytes) made for this one recipient. The recipient
-    /// uses it to encrypt Bluetooth nudges to the sender while either app is in the
-    /// background, so only the two of them can make or read those nudges. It travels
-    /// only over the encrypted peer-to-peer link. Optional for older builds.
-    var nudgeKey: String? = nil
-    /// Fresh random value (base64, 16 bytes). A peer that already knows this sender's
-    /// identity answers with a `proof` over it, so an id can't be taken over by someone else.
-    var nonce: String? = nil
 }
 
-/// Sent right after receiving the hello of someone this phone has met before: an HMAC,
-/// with the key that person handed us last time, over both ids and their hello nonce.
-/// Only the real holder of that id could have received the key, so the other phone
-/// binds the id only after checking this.
-nonisolated struct ProofPayload: Codable, Equatable, Sendable {
-    /// base64 HMAC-SHA256.
-    var mac: String
+/// Flooded through the mesh so people further away can be found and sent a request.
+nonisolated struct AnnouncePayload: Codable, Equatable, Sendable {
+    var nickname: String
+}
 
-    static func message(prover: String, verifier: String, nonce: String) -> Data {
-        Data("cruiselan.proof.v1|\(prover)|\(verifier)|\(nonce)".utf8)
-    }
+/// A contact request or acceptance. Sealed, so only the two phones see it.
+nonisolated struct ContactPayload: Codable, Equatable, Sendable {
+    var nickname: String
+}
+
+/// A fresh random key (base64, 32 bytes) made for one contact. They use it to encrypt
+/// Bluetooth nudges to the sender while either app is in the background, so only the
+/// two of them can make or read those nudges. Sent sealed through the mesh.
+nonisolated struct KeysPayload: Codable, Equatable, Sendable {
+    var nudgeKey: String
 }
 
 nonisolated struct PresencePayload: Codable, Equatable, Sendable {
