@@ -18,9 +18,12 @@ import Foundation
 ///   only with people it has connected with. It changes every launch.
 nonisolated enum Nudge {
     enum Kind: Codable, Equatable, Sendable {
-        /// A chat message. `preview` is the start of the text, already filtered by the sender.
-        /// `conversationId` is nil for "Everyone".
+        /// A chat message too long to send whole: a notification preview (the start of the
+        /// text, already filtered by the sender). `conversationId` is nil for "Everyone".
         case chat(preview: String?, conversationId: UUID?)
+        /// A whole chat message, with the same id it has in the mesh, so it lands in the chat
+        /// right away and the copy that arrives later isn't shown twice.
+        case message(id: UUID, text: String, conversationId: UUID?)
         case turn(GameType)
         /// An invitation to a game the sender is hosting.
         case invite(GameType)
@@ -31,6 +34,7 @@ nonisolated enum Nudge {
         var topic: String? {
             switch self {
             case .chat(_, let conversationId): "chat-\(conversationId?.uuidString ?? "everyone")"
+            case .message: nil
             case .turn(let game): "turn-\(game.rawValue)"
             case .invite(let game): "invite-\(game.rawValue)"
             case .move: nil

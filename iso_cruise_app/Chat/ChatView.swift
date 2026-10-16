@@ -474,6 +474,15 @@ struct MessageRow: View {
     let message: ChatStore.Message
     var showsSender = true
 
+    /// For a message waiting for someone who's away, including what Bluetooth managed.
+    private var heldText: String {
+        switch message.deliveryNote {
+        case .notified: "Waiting to send · they were notified"
+        case .unreachable: "Waiting to send · their phone didn't answer by Bluetooth"
+        case .bluetooth, nil: "Waiting to send"
+        }
+    }
+
     var body: some View {
         switch message.kind {
         case .system:
@@ -501,7 +510,11 @@ struct MessageRow: View {
                         )
                         .textSelection(.enabled)
                     if message.isHeld {
-                        Label("Waiting to send", systemImage: "clock")
+                        Label(heldText, systemImage: message.deliveryNote == .unreachable ? "exclamationmark.circle" : "clock")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    } else if message.deliveryNote == .bluetooth {
+                        Label("Delivered by Bluetooth", systemImage: "checkmark")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     } else {

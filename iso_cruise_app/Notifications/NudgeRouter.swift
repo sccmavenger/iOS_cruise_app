@@ -35,9 +35,8 @@ final class NudgeRouter {
             else { return }
             self.notifications.chatReceived(title: self.title(for: identity, in: conversationId), text: text, conversationId: conversationId)
         }
-        session.onChatQueuedForAway = { [weak self] ids, text, conversationId in
-            let id = conversationId == ChatStore.everyoneId ? nil : conversationId
-            for person in ids { self?.send(.chat(preview: Nudge.preview(of: text), conversationId: id), to: person) }
+        session.onChatQueuedForAway = { [weak self] ids, text, conversationId, messageId in
+            self?.sendChat(text, messageId: messageId, conversationId: conversationId, to: ids)
         }
         session.onPeerReturned = { [weak self] identity in
             self?.delivered.forget(identity.id)
@@ -71,6 +70,37 @@ final class NudgeRouter {
     }
 
     // MARK: - Outgoing
+
+    /// Sends a chat message to people who are away: the whole message if it fits in one
+    /// Bluetooth write (it lands in their chat right away), otherwise a notification preview.
+    /// When every attempt has finished, the message in this phone's chat says what happened.
+    private func sendChat(_ text: String, messageId: UUID, conversationId: UUID, to ids: [String]) {
+        let wireConversation = conversationId == ChatStore.everyoneId ? nil : conversationId
+        var results: [(whole: Bool, ok: Bool)] = []
+        let finish = { [weak self] in
+            guard let self, results.count == ids.count else { return }
+            let note: ChatStore.DeliveryNote
+            if results.allSatisfy({ $0.ok && $0.whole }) {
+                note = .bluetooth
+            } else if results.contains(where: \.ok) {
+                note = .notified
+            } else {
+                note = .unreachable
+            }
+            self.session.chat.setDeliveryNote(note, for: messageId)
+        }
+        for person in ids {
+            let whole = Nudge.Kind.message(id: messageId, text: text, conversationId: wireConversation)
+            let fits = session.nudgeKey(sealingTo: person).flatMap {
+                Nudge.seal(Nudge.Message(id: UUID(), sentAt: .now, kind: whole), from: session.localId, key: $0)
+            } != nil
+            let kind = fits ? whole : .chat(preview: Nudge.preview(of: text), conversationId: wireConversation)
+            send(kind, to: person) { ok in
+                results.append((fits, ok))
+                finish()
+            }
+        }
+    }
 
     func send(_ kind: Nudge.Kind, to personId: String, completion: ((Bool) -> Void)? = nil) {
         let topic = kind.topic
@@ -119,6 +149,18 @@ final class NudgeRouter {
         else { return false }
 
         switch message.kind {
+        case .message(let id, let text, let conversationId):
+            // Filed in the chat now; filtered and checked like a message from the mesh.
+            guard let target = session.receiveBluetoothChat(id: id, text: text, conversationId: conversationId, from: from) else {
+                // A group we don't know yet: still let them know something arrived.
+                if conversationId != nil, session.filter.check(text).isAllowed {
+                    notifications.chatNudgeReceived(title: sender.nickname, preview: Nudge.preview(of: text), conversationId: nil)
+                }
+                return true
+            }
+            notifications.setBadge(session.chat.totalUnread)
+            if notifications.isAppActive, session.chat.visibleConversationId == target { return true }
+            notifications.chatReceived(title: title(for: sender, in: target), text: text, conversationId: target)
         case .chat(let preview, let conversationId):
             // If they're connected, the real message arrives over the session instead.
             guard !session.isConnected(from) else { return true }

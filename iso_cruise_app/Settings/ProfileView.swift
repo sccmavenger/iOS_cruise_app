@@ -1,4 +1,6 @@
+import CoreBluetooth
 import SwiftUI
+import UserNotifications
 
 /// Nickname editing plus a plain-language summary of privacy and limitations.
 struct ProfileView: View {
@@ -6,6 +8,8 @@ struct ProfileView: View {
     @Environment(SessionManager.self) private var session
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
+    @State private var notificationsAllowed: Bool?
+    @Environment(\.openURL) private var openURL
 
     private var nicknameProblem: String? {
         guard let clean = Nickname.sanitize(name) else { return nil }
@@ -34,6 +38,18 @@ struct ProfileView: View {
                     } else {
                         Text("Nicknames aren't verified, but your tag can't be faked: friends can check it to know it's really you. Changing your nickname reconnects you.")
                     }
+                }
+
+                Section {
+                    LabeledContent("Bluetooth", value: bluetoothStatus)
+                    LabeledContent("Notifications", value: notificationsAllowed.map { $0 ? "Allowed" : "Off" } ?? "…")
+                    if !isReadyForAwayMessages, let url = URL(string: UIApplication.openSettingsURLString) {
+                        Button("Open CruiseLAN Settings") { openURL(url) }
+                    }
+                } header: {
+                    Text("When your phone is locked")
+                } footer: {
+                    Text("Friends nearby reach your phone over Bluetooth while CruiseLAN is in the background, so you get their messages and turns. This needs Bluetooth and Notifications on for CruiseLAN. Don't swipe CruiseLAN away in the app switcher: iOS can't wake an app that was closed that way, so nothing arrives until you open it again.")
                 }
 
                 Section("Safety") {
@@ -93,7 +109,26 @@ struct ProfileView: View {
                 }
             }
             .onAppear { name = profile.nickname ?? "" }
+            .task {
+                let settings = await UNUserNotificationCenter.current().notificationSettings()
+                notificationsAllowed = [.authorized, .provisional, .ephemeral].contains(settings.authorizationStatus)
+            }
         }
+    }
+}
+
+extension ProfileView {
+    private var bluetoothStatus: String {
+        switch CBManager.authorization {
+        case .allowedAlways: "Allowed"
+        case .denied, .restricted: "Off"
+        case .notDetermined: "Not asked yet"
+        @unknown default: "Unknown"
+        }
+    }
+
+    private var isReadyForAwayMessages: Bool {
+        CBManager.authorization == .allowedAlways && notificationsAllowed != false
     }
 }
 

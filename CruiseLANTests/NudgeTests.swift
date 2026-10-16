@@ -129,4 +129,18 @@ struct NudgeTests {
         #expect(Nudge.Kind.chat(preview: nil, conversationId: nil).topic == "chat-everyone")
         #expect(Nudge.Kind.invite(.chess).topic == "invite-chess")
     }
+
+    @Test("A normal-length message fits in one Bluetooth write whole; a very long one doesn't")
+    func wholeMessages() throws {
+        let key = SymmetricKey(size: .bits256)
+        let sender = MeshIdentity().id
+        let typical = String(repeating: "Meet at the pool deck by the slides at 3? ", count: 4) // ~170 bytes, longer than most chats
+        let message = Nudge.Message(id: UUID(), sentAt: Date(timeIntervalSince1970: Date.now.timeIntervalSince1970.rounded()),
+                                    kind: .message(id: UUID(), text: typical, conversationId: UUID()))
+        let data = try #require(Nudge.seal(message, from: sender, key: key))
+        #expect(Nudge.open(data, keys: [sender: key])?.message == message)
+        let long = String(repeating: "x", count: EnvelopeCodec.maxChatCharacters)
+        #expect(Nudge.seal(Nudge.Message(id: UUID(), sentAt: .now, kind: .message(id: UUID(), text: long, conversationId: nil)),
+                           from: sender, key: key) == nil)
+    }
 }

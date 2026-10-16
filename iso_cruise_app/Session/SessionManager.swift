@@ -178,7 +178,8 @@ final class SessionManager {
     /// A chat message from a contact passed the safety filter and was added to a conversation.
     @ObservationIgnored var onChatReceived: ((PeerIdentity, String, UUID) -> Void)?
     /// The local user sent a chat message (already filtered) in a conversation while these contacts were away.
-    @ObservationIgnored var onChatQueuedForAway: (([String], String, UUID) -> Void)?
+    /// Arguments: away contact ids, text, conversation id, message id.
+    @ObservationIgnored var onChatQueuedForAway: (([String], String, UUID, UUID) -> Void)?
     /// A contact reconnected (for example, after their app was in the background).
     @ObservationIgnored var onPeerReturned: ((PeerIdentity) -> Void)?
     /// The app came back to the foreground after `suspend()`.
@@ -564,17 +565,43 @@ final class SessionManager {
             held.append((text, now(), ref, messageId))
             outbox[id] = Array(held.suffix(Self.outboxLimit))
         }
-        if !away.isEmpty { onChatQueuedForAway?(away, text, conversationId) }
         chat.appendText(id: messageId, senderId: localId, senderName: localIdentity.nickname, text: text,
                         isLocal: true, conversationId: conversationId, isHeld: envelope == nil)
+        if !away.isEmpty { onChatQueuedForAway?(away, text, conversationId, messageId) }
         return .sent
+    }
+
+    /// A contact's chat message that arrived over Bluetooth while this app was in the
+    /// background (see `NudgeRouter`). Filed like one from the mesh; the mesh copy that
+    /// arrives later has the same id and isn't shown twice. Returns the conversation it's in,
+    /// or nil if it was dropped (filtered, not a contact, or a group we don't know yet).
+    @discardableResult
+    func receiveBluetoothChat(id: UUID, text: String, conversationId: UUID?, from senderId: String) -> UUID? {
+        guard let sender = knownIdentities[senderId], !safety.isBlocked(identityId: senderId),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= EnvelopeCodec.maxChatCharacters,
+              filter.check(text).isAllowed
+        else { return nil }
+        let target: UUID
+        switch conversationId {
+        case nil:
+            target = ChatStore.everyoneId
+        case let id? where id == ConversationRef.directId(localId, senderId):
+            target = directConversation(with: sender).id
+        case let id?:
+            guard let conversation = chat.conversation(id), conversation.memberIds.contains(senderId) else { return nil }
+            target = conversation.id
+        }
+        chat.appendText(id: id, senderId: senderId, senderName: sender.nickname, text: text, isLocal: false, conversationId: target)
+        return target
     }
 
     private func deliverOutbox(to identity: PeerIdentity) {
         guard let held = outbox.removeValue(forKey: identity.id) else { return }
         let cutoff = now().addingTimeInterval(-Self.outboxLifetime)
         for message in held where message.date > cutoff {
-            if send(.chat(ChatPayload(text: message.text, conversation: message.conversation)), to: [identity.id]) != nil {
+            // Same id as the original, so a copy that already arrived another way (Bluetooth,
+            // or for the members who were connected) isn't shown twice.
+            if send(.chat(ChatPayload(text: message.text, conversation: message.conversation)), to: [identity.id], id: message.messageId) != nil {
                 chat.markDelivered(message.messageId)
             }
         }
@@ -665,11 +692,12 @@ final class SessionManager {
     /// Seals a payload for contacts and sends it into the mesh. `recipients` are identity
     /// ids; `nil` means every connected contact. Only connected contacts are sent to.
     @discardableResult
-    func send(_ payload: Envelope.Payload, sessionId: UUID? = nil, to recipients: [String]? = nil) -> Envelope? {
+    func send(_ payload: Envelope.Payload, sessionId: UUID? = nil, to recipients: [String]? = nil, id: UUID? = nil) -> Envelope? {
         let ids = (recipients.map(Set.init) ?? reachableIds).filter { reachableIds.contains($0) || payload.kind == .contactEnd }
         let targets = ids.compactMap { id in directory[id].map { (id: id, agreementKey: $0.agreementKey) } }
         guard !targets.isEmpty else { return nil }
-        let envelope = makeEnvelope(payload, sessionId: sessionId)
+        var envelope = makeEnvelope(payload, sessionId: sessionId)
+        if let id { envelope.id = id }
         return sendSealed(envelope, to: targets) ? envelope : nil
     }
 
@@ -683,10 +711,7 @@ final class SessionManager {
         var sent = false
         for start in stride(from: 0, to: recipients.count, by: MeshPacket.maxRecipients) {
             let chunk = Array(recipients[start..<min(start + MeshPacket.maxRecipients, recipients.count)])
-            // Each chunk needs its own packet id; the envelope id names the first.
-            var copy = envelope
-            if start > 0 { copy.id = UUID() }
-            guard let packet = try? MeshPacket.sealed(copy, to: chunk, from: meshIdentity, ttl: MeshPacket.maxTTL, now: now()) else {
+            guard let packet = try? MeshPacket.sealed(envelope, to: chunk, from: meshIdentity, ttl: MeshPacket.maxTTL, now: now()) else {
                 Self.logger.error("Seal failed for \(envelope.kind.rawValue, privacy: .public)")
                 continue
             }
@@ -1161,6 +1186,8 @@ final class SessionManager {
                 guard chat.adopt(safe) else { return reject("conversation mismatch") }
                 conversationId = ref.id
             }
+            // Already here (it came by Bluetooth, or another way): don't show or announce it twice.
+            guard !chat.hasMessage(envelope.id) else { return }
             chat.appendText(id: envelope.id, senderId: origin, senderName: identity.nickname, text: chatPayload.text,
                             isLocal: false, conversationId: conversationId)
             DebugTrace.log("session chat from \(identity.nickname) hops=\(MeshPacket.maxTTL - packet.ttl): \(chatPayload.text)")

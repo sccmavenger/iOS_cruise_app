@@ -69,7 +69,7 @@ nonisolated struct MeshPacket: Codable, Equatable, Sendable {
     /// A public packet anyone can read (announcements and link hellos only).
     static func broadcast(_ envelope: Envelope, from identity: MeshIdentity, ttl: Int, now: Date = .now) throws -> MeshPacket {
         let body = try EnvelopeCodec.encode(envelope)
-        return try make(id: envelope.id, body: body, keys: [], from: identity, ttl: ttl, now: now)
+        return try make(id: UUID(), body: body, keys: [], from: identity, ttl: ttl, now: now)
     }
 
     /// A packet only `recipients` can read. Each recipient is (id, X25519 public key).
@@ -77,7 +77,10 @@ nonisolated struct MeshPacket: Codable, Equatable, Sendable {
                        from identity: MeshIdentity, ttl: Int, now: Date = .now) throws -> MeshPacket {
         guard (1...maxRecipients).contains(recipients.count) else { throw MeshPacketError.invalid("recipients") }
         let contentKey = SymmetricKey(size: .bits256)
-        let packetId = envelope.id
+        // Each packet has its own id (for duplicate suppression), separate from the message id
+        // inside: a message resent later (for someone who was away) must not look like a
+        // duplicate to the relays that carried the first copy.
+        let packetId = UUID()
         let plain = try EnvelopeCodec.encode(envelope)
         let body = try ChaChaPoly.seal(plain, using: contentKey, authenticating: Data(packetId.uuidString.utf8)).combined
         let rawContentKey = contentKey.withUnsafeBytes { Data($0) }
@@ -150,7 +153,7 @@ nonisolated struct MeshPacket: Codable, Equatable, Sendable {
         } catch {
             throw .invalid("envelope")
         }
-        guard envelope.senderId == origin, envelope.id == id else { throw .invalid("sender") }
+        guard envelope.senderId == origin else { throw .invalid("sender") }
         return envelope
     }
 

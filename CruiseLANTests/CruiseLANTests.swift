@@ -551,7 +551,7 @@ struct SessionManagerTests {
     @Test("Messages sent while a contact is away are held and delivered when they're back")
     func outboxForAway() throws {
         var queuedFor: [String] = []
-        session.onChatQueuedForAway = { ids, _, _ in queuedFor = ids }
+        session.onChatQueuedForAway = { ids, _, _, _ in queuedFor = ids }
         try befriend(remote)
         session.handle(.received(remote.sealed(.presence(PresencePayload(away: true)), to: session), from: remote.key))
         #expect(session.awayIdentityIds == [remote.id])
@@ -565,6 +565,47 @@ struct SessionManagerTests {
         session.handle(.received(remote.announce(), from: remote.key))
         #expect(remote.received(from: transport).contains { $0.payload == .chat(ChatPayload(text: "see you at dinner")) })
         #expect(session.chat.messages.last { $0.kind == .text }?.isHeld == false)
+    }
+
+    @Test("A message that came by Bluetooth is filed once, even when the mesh copy arrives later")
+    func bluetoothThenMesh() throws {
+        var notified = 0
+        session.onChatReceived = { _, _, _ in notified += 1 }
+        try befriend(remote)
+        let id = UUID()
+        #expect(session.receiveBluetoothChat(id: id, text: "At the pool", conversationId: nil, from: remote.id) == ChatStore.everyoneId)
+        let dm = ConversationRef.directId(session.localId, remote.id)
+        #expect(session.receiveBluetoothChat(id: UUID(), text: "Just you", conversationId: dm, from: remote.id) == dm)
+        // The same message later through the mesh: not shown or announced again.
+        var envelope = remote.envelope(.chat(ChatPayload(text: "At the pool")))
+        envelope.id = id
+        let data = try MeshPacket.sealed(envelope, to: [(session.localId, session.meshIdentity.agreementPublicKey)],
+                                         from: remote.identity, ttl: 6, now: clock.now).encoded()
+        session.handle(.received(data, from: remote.key))
+        #expect(texts() == ["At the pool", "Just you"])
+        #expect(notified == 0)
+    }
+
+    @Test("Bluetooth messages from strangers, or that fail the filter, are dropped")
+    func bluetoothChecks() throws {
+        let stranger = RemotePhone("Stranger", clock: clock)
+        #expect(session.receiveBluetoothChat(id: UUID(), text: "hi", conversationId: nil, from: stranger.id) == nil)
+        try befriend(remote)
+        #expect(session.receiveBluetoothChat(id: UUID(), text: "send nudes", conversationId: nil, from: remote.id) == nil)
+        #expect(session.receiveBluetoothChat(id: UUID(), text: "hi", conversationId: UUID(), from: remote.id) == nil) // unknown group
+        #expect(texts().isEmpty)
+    }
+
+    @Test("A held message goes out later with its original id")
+    func outboxKeepsId() throws {
+        try befriend(remote)
+        session.handle(.received(remote.sealed(.presence(PresencePayload(away: true)), to: session), from: remote.key))
+        #expect(session.sendChat("later") == .sent)
+        let held = try #require(session.chat.messages.last { $0.kind == .text })
+        clock.now += 1
+        session.handle(.received(remote.announce(), from: remote.key))
+        let resent = remote.received(from: transport).first { $0.payload == .chat(ChatPayload(text: "later")) }
+        #expect(resent?.id == held.id)
     }
 
     @Test("Going to the background drops contacts quietly and reports it as a local suspend")

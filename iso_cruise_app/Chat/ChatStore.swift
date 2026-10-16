@@ -36,6 +36,16 @@ final class ChatStore {
         }
     }
 
+    /// For a message sent while someone was away: what Bluetooth managed.
+    enum DeliveryNote: Equatable {
+        /// The whole message reached their phone over Bluetooth.
+        case bluetooth
+        /// Their phone showed a notification; the message itself follows when they're back.
+        case notified
+        /// Their phone didn't answer over Bluetooth (out of range, Bluetooth off, or the app was closed).
+        case unreachable
+    }
+
     struct Message: Identifiable, Equatable {
         enum Kind: Equatable {
             case text
@@ -53,6 +63,8 @@ final class ChatStore {
         var conversationId: UUID = ChatStore.everyoneId
         /// Sent while everyone it's for was away; it goes out when they're back.
         var isHeld = false
+        /// What happened over Bluetooth for someone who was away (see `DeliveryNote`).
+        var deliveryNote: DeliveryNote?
 
         var senderTag: String { Nickname.tag(for: senderId) }
     }
@@ -142,6 +154,17 @@ final class ChatStore {
         makeRoom()
         conversations[ref.id] = Conversation(id: ref.id, kind: kind, name: ref.name, members: ref.members, lastActivity: .now)
         return true
+    }
+
+    func hasMessage(_ id: UUID) -> Bool {
+        messages.contains { $0.id == id }
+    }
+
+    /// Records what Bluetooth managed for a held message. A message that arrived whole is no longer held.
+    func setDeliveryNote(_ note: DeliveryNote, for messageId: UUID) {
+        guard let index = messages.firstIndex(where: { $0.id == messageId }) else { return }
+        messages[index].deliveryNote = note
+        if note == .bluetooth { messages[index].isHeld = false }
     }
 
     /// A held message reached someone.

@@ -576,7 +576,7 @@ struct GameCoordinatorTests {
     @Test("A private message to someone away is held and lands in the right chat when they're back")
     func directChatWhileAway() throws {
         var queued: (ids: [String], conversation: UUID)?
-        host.session.onChatQueuedForAway = { ids, _, conversation in queued = (ids, conversation) }
+        host.session.onChatQueuedForAway = { ids, _, conversation, _ in queued = (ids, conversation) }
         let guestIdentity = try #require(host.session.identity(for: guest.id))
         let dm = host.session.directConversation(with: guestIdentity)
         network.disconnect(host, guest)
