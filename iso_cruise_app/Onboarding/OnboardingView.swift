@@ -25,7 +25,7 @@ struct OnboardingView: View {
                 Image("Hero")
                     .resizable()
                     .scaledToFill()
-                    .frame(height: 260)
+                    .frame(height: 200)
                     .frame(maxWidth: .infinity)
                     .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
                     .accessibilityHidden(true)
@@ -36,12 +36,6 @@ struct OnboardingView: View {
                     Text("Chat and play games with people nearby — no internet needed.")
                         .font(.title3)
                         .foregroundStyle(.secondary)
-                }
-
-                VStack(alignment: .leading, spacing: 14) {
-                    FeatureRow(symbol: "wifi.slash", title: "Works offline", detail: "Connects directly to nearby iPhones over Wi-Fi or Bluetooth.")
-                    FeatureRow(symbol: "lock.fill", title: "Private by design", detail: "Encrypted links, no accounts, no cloud. Messages vanish when you quit.")
-                    FeatureRow(symbol: "gamecontroller.fill", title: "Play together", detail: "Chess, Checkers, Color Match, Connect Four, and Tic-Tac-Toe.")
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -64,6 +58,12 @@ struct OnboardingView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
+                }
+
+                VStack(alignment: .leading, spacing: 14) {
+                    FeatureRow(symbol: "wifi.slash", title: "Works offline", detail: "Connects directly to nearby iPhones over Wi-Fi or Bluetooth.")
+                    FeatureRow(symbol: "lock.fill", title: "Private by design", detail: "Encrypted links, no accounts, no cloud. Messages vanish when you quit.")
+                    FeatureRow(symbol: "gamecontroller.fill", title: "Play together", detail: "Chess, Checkers, Color Match, Connect Four, and Tic-Tac-Toe.")
                 }
 
                 Text("Next, iOS will ask about your local network, Bluetooth, and notifications. CruiseLAN uses them to find nearby people and to let you know about new messages and your turn, even while you're in another app.")

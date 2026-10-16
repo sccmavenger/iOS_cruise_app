@@ -49,6 +49,8 @@ final class NotificationManager: NSObject {
     /// Kept current by the UI so banners aren't shown for what the user is looking at.
     var isAppActive = true
     var isMatchOnScreen = false
+    /// The chat list is on screen, already showing new messages and unread counts.
+    var isChatListOnScreen = false
 
     private var center: UNUserNotificationCenter { .current() }
 

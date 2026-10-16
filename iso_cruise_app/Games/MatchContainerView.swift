@@ -220,7 +220,7 @@ struct MatchView: View {
         ScrollView {
             VStack(spacing: 20) {
                 if !games.awayIds.isEmpty {
-                    AwayBanner(names: games.awayIds.sorted().map(games.name(for:)), detail: awayDetail)
+                    AwayBanner(title: awayTitle, detail: awayDetail, isReconnecting: isReconnecting)
                 }
                 switch games.snapshot {
                 case .ticTacToe(let state):
@@ -251,21 +251,23 @@ struct MatchView: View {
 
 /// Shown while someone's app is in the background: the match is paused, not over.
 struct AwayBanner: View {
-    let names: [String]
+    let title: String
     let detail: String
+    var isReconnecting = false
 
     var body: some View {
         Label {
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(names.formatted(.list(type: .and))) stepped away")
+                Text(title)
                     .font(.subheadline.weight(.semibold))
                 Text(detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         } icon: {
-            Image(systemName: "pause.circle.fill")
-                .foregroundStyle(Theme.sunset)
+            Image(systemName: isReconnecting ? "arrow.triangle.2.circlepath" : "pause.circle.fill")
+                .foregroundStyle(isReconnecting ? Theme.teal : Theme.sunset)
+                .symbolEffect(.rotate, isActive: isReconnecting)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -275,7 +277,21 @@ struct AwayBanner: View {
 }
 
 extension MatchView {
+    /// Everyone missing dropped because our own app was away: we're the one catching up.
+    fileprivate var isReconnecting: Bool {
+        !games.awayIds.isEmpty && games.awayIds.isSubset(of: games.reconnectingIds)
+    }
+
+    fileprivate var awayTitle: String {
+        let names = games.awayIds.sorted().map(games.name(for:)).formatted(.list(type: .and))
+        if isReconnecting { return "Reconnecting to \(names)…" }
+        // Only say they stepped away if their app said so; otherwise we just can't reach them.
+        let saidAway = games.awayIds.isSubset(of: games.session.steppedAwayIds)
+        return saidAway ? "\(names) stepped away" : "Can't reach \(names) right now"
+    }
+
     fileprivate var awayDetail: String {
+        if isReconnecting { return "You were away for a moment. This usually takes a few seconds." }
         if games.relayedMoveDelivered {
             return "Your move reached their phone over Bluetooth. It shows here when they're back."
         }

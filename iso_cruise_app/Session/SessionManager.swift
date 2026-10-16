@@ -86,6 +86,11 @@ final class SessionManager {
     static let proofTimeout: Duration = .seconds(15)
     /// If the peer that should invite (see `reconnect`) hasn't after this long, invite anyway.
     static let reconnectFallback: Duration = .seconds(3)
+    /// How long the phone that stayed waits for the returning phone to invite before inviting itself.
+    static let stayedReconnectDelay: Double = 5
+    /// A transport started this recently counts as "just came back" for choosing who reconnects.
+    /// The returning phone finds the other within a second or so of restarting.
+    static let justStartedWindow: TimeInterval = 5
     /// Time for the "stepping away" message to leave before the transport is torn down.
     static let stepAwayGrace: Duration = .milliseconds(300)
     private static let logger = Logger(subsystem: "com.dannyguillory.cruiselan", category: "session")
@@ -150,7 +155,7 @@ final class SessionManager {
     /// Filtered messages received per sender this session; drives auto-blocking.
     @ObservationIgnored private var filterStrikes: [String: Int] = [:]
     /// Chat this user sent while someone they'd connected with was away, by identity id.
-    @ObservationIgnored private var outbox: [String: [(text: String, date: Date, conversation: ConversationRef?)]] = [:]
+    @ObservationIgnored private var outbox: [String: [(text: String, date: Date, conversation: ConversationRef?, messageId: UUID)]] = [:]
     /// Bluetooth nudge keys (see `HelloPayload.nudgeKey`). `issued` is what this device
     /// handed to a transport peer in its hello; once that peer's identity is known it
     /// becomes `inboundNudgeKeys` (they encrypt to us). `outboundNudgeKeys` are the keys
@@ -207,8 +212,18 @@ final class SessionManager {
         peers.values.filter { $0.connection == .connected && !$0.isBlocked }.sorted { $0.shownName < $1.shownName }
     }
 
+    /// People found nearby who aren't connected. Someone who's away (and listed as such) isn't
+    /// listed again here while CruiseLAN is reconnecting to them automatically; if that gives
+    /// up, they show here again so they can be invited by hand.
     var nearbyPeers: [RemotePeer] {
-        peers.values.filter { $0.connection != .connected && $0.isNearby && !$0.isBlocked }.sorted { $0.displayName < $1.displayName }
+        let awayDevices = Set(awayIdentityIds.compactMap { fingerprintByIdentity[$0] })
+        return peers.values.filter { peer in
+            guard peer.connection != .connected, peer.isNearby, !peer.isBlocked else { return false }
+            guard !awayDevices.isEmpty, reconnectTasks[peer.key] != nil,
+                  let fingerprint = transport.fingerprint(for: peer.key)
+            else { return true }
+            return !awayDevices.contains(fingerprint)
+        }.sorted { $0.displayName < $1.displayName }
     }
 
     /// Identities of connected peers that completed the handshake.
@@ -355,6 +370,9 @@ final class SessionManager {
         suspend()
     }
 
+    /// Whether discovery is stopped because the app went to the background (see `suspend()`).
+    var isSuspended: Bool { !transportRunning && profile.nickname != nil }
+
     /// Restarts discovery after the app returns to the foreground; trusted peers reconnect on their own.
     func resume() {
         if stepAwayPending {
@@ -381,7 +399,10 @@ final class SessionManager {
     func invite(_ key: PeerKey) -> Bool {
         guard var peer = peers[key], peer.connection == .notConnected, !peer.isInvited, !peer.isBlocked,
               transport.invite(key)
-        else { return false }
+        else {
+            DebugTrace.log("session invite skipped \(peers[key].map { "\($0.displayName) \($0.connection) invited=\($0.isInvited)" } ?? "unknown")")
+            return false
+        }
         peer.isInvited = true
         peers[key] = peer
         approvedKeys.insert(key)
@@ -417,15 +438,16 @@ final class SessionManager {
         let envelope = send(.chat(ChatPayload(text: text, conversation: ref)), to: members.map { Array($0) })
         guard envelope != nil || !away.isEmpty else { return .noRecipients }
         // Hold a copy for members who are away; they get it when they reconnect.
+        let messageId = envelope?.id ?? UUID()
         let cutoff = now().addingTimeInterval(-Self.outboxLifetime)
         for id in away {
             var held = (outbox[id] ?? []).filter { $0.date > cutoff }
-            held.append((text, now(), ref))
+            held.append((text, now(), ref, messageId))
             outbox[id] = Array(held.suffix(Self.outboxLimit))
         }
         if !away.isEmpty { onChatQueuedForAway?(away, text, conversationId) }
-        chat.appendText(id: envelope?.id ?? UUID(), senderId: localId, senderName: localIdentity.nickname, text: text,
-                        isLocal: true, conversationId: conversationId)
+        chat.appendText(id: messageId, senderId: localId, senderName: localIdentity.nickname, text: text,
+                        isLocal: true, conversationId: conversationId, isHeld: envelope == nil)
         return .sent
     }
 
@@ -433,7 +455,9 @@ final class SessionManager {
         guard let held = outbox.removeValue(forKey: identity.id) else { return }
         let cutoff = now().addingTimeInterval(-Self.outboxLifetime)
         for message in held where message.date > cutoff {
-            send(.chat(ChatPayload(text: message.text, conversation: message.conversation)), to: [identity.id])
+            if send(.chat(ChatPayload(text: message.text, conversation: message.conversation)), to: [identity.id]) != nil {
+                chat.markDelivered(message.messageId)
+            }
         }
     }
 
@@ -584,6 +608,7 @@ final class SessionManager {
             break
 
         case .peerFound(let key, let rawName):
+            DebugTrace.log("session found \(rawName) trusted=\(trusted.isTrusted(transport.fingerprint(for: key))) fp=\(transport.fingerprint(for: key) ?? "nil") existing=\(peers[key].map { "\($0.connection) invited=\($0.isInvited)" } ?? "none")")
             let name = filter.safeNickname(rawName)
             var peer = peers[key] ?? RemotePeer(key: key, displayName: name, connection: .notConnected, isNearby: true, isInvited: false)
             peer.displayName = name
@@ -593,9 +618,12 @@ final class SessionManager {
             peers[key] = peer
             if !peer.isBlocked, peer.connection == .notConnected, trusted.isTrusted(transport.fingerprint(for: key)) {
                 scheduleReconnect(key)
+            } else if DebugTrace.autoConnect, !peer.isBlocked, peer.connection == .notConnected, (profile.nickname ?? "") < rawName {
+                invite(key)
             }
 
         case .peerLost(let key):
+            DebugTrace.log("session lost \(peers[key]?.displayName ?? "?") state=\(peers[key].map { "\($0.connection)" } ?? "none")")
             guard var peer = peers[key] else { return }
             if peer.connection == .notConnected {
                 peers[key] = nil
@@ -612,7 +640,8 @@ final class SessionManager {
             }
             // Someone this user already accepted is coming back: no need to ask again.
             // (If they claim an id we know, they still have to prove it after connecting.)
-            if trusted.isTrusted(transport.fingerprint(for: key)) {
+            DebugTrace.log("session invitation from \(rawName) trusted=\(trusted.isTrusted(transport.fingerprint(for: key)))")
+            if trusted.isTrusted(transport.fingerprint(for: key)) || DebugTrace.autoConnect {
                 approvedKeys.insert(key)
                 transport.respond(toInvitation: invitationId, accept: true)
                 return
@@ -641,18 +670,26 @@ final class SessionManager {
         else { return }
         let mine = profile.nickname ?? "", theirs = peer.advertisedName
         let backoff: Double = attempt == 0 ? 0 : min(30, pow(2, Double(attempt)))
-        let deferToThem: Double = mine < theirs ? 0 : (mine == theirs ? Double.random(in: 0.3...2) : 3)
+        // The phone that just came back invites first: in testing, invitations from the phone
+        // that stayed often stall when the other phone's discovery has only just restarted.
+        // The phone that stayed invites only as a fallback. Between two phones in the same
+        // situation, comparing nicknames picks one so the invitations don't collide.
+        let tieBreak: Double = mine < theirs ? 0 : (mine == theirs ? Double.random(in: 0.3...2) : 3)
+        let deferToThem: Double = justStarted ? tieBreak : Self.stayedReconnectDelay + tieBreak
         let delay = backoff + deferToThem
+        DebugTrace.log("session reconnect \(theirs) attempt=\(attempt) delay=\(delay) state=\(peer.connection) invited=\(peer.isInvited)")
         if delay == 0 { invite(key) }
         reconnectTasks[key] = Task { [weak self] in
             if delay > 0 {
                 try? await Task.sleep(for: .seconds(delay))
-                guard !Task.isCancelled, let self, self.peers[key]?.connection == .notConnected else { return }
-                self.invite(key)
+                guard !Task.isCancelled, let self else { return }
+                // If their invitation is already connecting, don't send a competing one, but
+                // keep this task alive so a failed attempt is still retried below.
+                if self.peers[key]?.connection == .notConnected { self.invite(key) }
             }
             // If this attempt didn't connect, try again a bit later.
             try? await Task.sleep(for: .seconds(12))
-            guard !Task.isCancelled, let self, self.peers[key]?.connection == .notConnected else { return }
+            guard !Task.isCancelled, let self, let current = self.peers[key], current.connection != .connected else { return }
             if var peer = self.peers[key] {
                 peer.isInvited = false
                 self.peers[key] = peer
@@ -661,7 +698,14 @@ final class SessionManager {
         }
     }
 
+    /// Whether discovery restarted moments ago (this phone just opened or came back to the app).
+    private var justStarted: Bool {
+        guard case .running(let since) = status else { return true }
+        return now().timeIntervalSince(since) < Self.justStartedWindow
+    }
+
     private func handleStateChange(key: PeerKey, state: PeerConnectionState, announce: Bool = true, reason: DropReason = .connectionLost) {
+        DebugTrace.log("session state \(peers[key]?.displayName ?? "?") \(peers[key].map { "\($0.connection)" } ?? "none") -> \(state) reason=\(reason)")
         var peer = peers[key] ?? RemotePeer(key: key, displayName: "Unknown", connection: state, isNearby: false, isInvited: false)
         // Connections can arrive without discovery (another member brought them into the
         // session), so check the block list here too.
@@ -676,6 +720,14 @@ final class SessionManager {
             lastSequenceByKey[key] = nil
             peers[key] = peer
             if !peer.isBlocked { sendHello(to: key) }
+            return
+        }
+
+        // A reconnection attempt that didn't get through: keep trying while they're nearby.
+        if previous == .connecting, state == .notConnected, reason != .localSuspend, !peer.isBlocked,
+           peer.isNearby, trusted.isTrusted(transport.fingerprint(for: key)) {
+            peers[key] = peer
+            scheduleReconnect(key, attempt: 1)
             return
         }
 
@@ -892,6 +944,7 @@ final class SessionManager {
             trusted.trust(transport.fingerprint(for: key))
         }
         chat.updateNickname(identity.nickname, for: identity.id)
+        DebugTrace.log("session bound \(identity.nickname) returning=\(returning)")
         chat.appendSystem(returning ? "\(identity.labeledName) is back" : "\(identity.labeledName) connected")
         pruneDeparted()
         persistIdentity()
@@ -933,6 +986,7 @@ final class SessionManager {
 
     private func reject(_ reason: StaticString) {
         rejectedEnvelopeCount += 1
+        DebugTrace.log("session reject \(reason)")
         Self.logger.notice("Rejected inbound envelope: \(reason, privacy: .public)")
     }
 }

@@ -71,9 +71,16 @@ import UIKit
                     await notifications.requestAuthorization()
                 }
         }
-        .onChange(of: scenePhase) { _, phase in
+        .onChange(of: scenePhase) { old, phase in
             notifications.isAppActive = phase == .active
             switch phase {
+            case .inactive where old == .background:
+                // Back on screen but not yet active, for example behind a system alert.
+                // Peer-to-peer works now, so reconnect without waiting for the alert.
+                session.resume()
+            case .active where old == .inactive && !session.isSuspended:
+                // Already resumed on the way through `.inactive`.
+                break
             case .background:
                 // iOS drops peer-to-peer sessions now anyway. Tell peers we're stepping away
                 // first, so they show "away", keep the game paused, and nudge us over Bluetooth.

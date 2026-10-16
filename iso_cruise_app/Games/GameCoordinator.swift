@@ -62,6 +62,9 @@ final class GameCoordinator {
     private(set) var invitedIds: Set<String> = []
     /// Seated players whose connection dropped mid-match; the match is paused for them.
     private(set) var awayIds: Set<String> = []
+    /// Players who dropped only because this phone's own app was in the background; we're
+    /// reconnecting to them rather than waiting for them to come back.
+    private(set) var reconnectingIds: Set<String> = []
     /// The pending move went to the away host's phone over Bluetooth; it shows when they're back.
     private(set) var relayedMoveDelivered = false
     /// Short-lived feedback such as "That square is already taken."
@@ -569,6 +572,7 @@ final class GameCoordinator {
         if identity.id == lobby?.hostId, !relayedMoveDelivered { pendingMoveId = nil }
         if quietly {
             suspendedLocally = true
+            reconnectingIds.insert(identity.id)
             return
         }
         startAwayTimer(for: identity)
@@ -600,6 +604,9 @@ final class GameCoordinator {
             guard let self, !self.awayIds.isEmpty else { return }
             self.requestNudgesIfNeeded()
             self.startNudgeRetries()
+            // Still missing after a while: they really are away, not just reconnecting.
+            try? await Task.sleep(for: .seconds(25))
+            self.reconnectingIds.removeAll()
         }
     }
 
@@ -628,6 +635,7 @@ final class GameCoordinator {
     }
 
     private func peerIdentified(_ identity: PeerIdentity) {
+        reconnectingIds.remove(identity.id)
         if awayIds.remove(identity.id) != nil {
             awayTimers.removeValue(forKey: identity.id)?.cancel()
             if isHost {
@@ -827,6 +835,7 @@ final class GameCoordinator {
         invitedIds = []
         joiningLobbyId = nil
         awayIds = []
+        reconnectingIds = []
         awayTimers.values.forEach { $0.cancel() }
         awayTimers = [:]
         nudgeRetry?.cancel()

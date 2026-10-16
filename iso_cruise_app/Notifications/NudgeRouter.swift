@@ -29,8 +29,10 @@ final class NudgeRouter {
         session.onChatReceived = { [weak self] identity, text, conversationId in
             guard let self else { return }
             self.notifications.setBadge(self.session.chat.totalUnread)
-            // No banner for the conversation that's on screen.
-            guard self.session.chat.visibleConversationId != conversationId else { return }
+            // No banner for the conversation that's on screen, or while the chat list is showing.
+            guard self.session.chat.visibleConversationId != conversationId,
+                  !(self.notifications.isAppActive && self.notifications.isChatListOnScreen)
+            else { return }
             self.notifications.chatReceived(title: self.title(for: identity, in: conversationId), text: text, conversationId: conversationId)
         }
         session.onChatQueuedForAway = { [weak self] ids, text, conversationId in

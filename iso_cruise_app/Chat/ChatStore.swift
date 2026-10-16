@@ -51,6 +51,8 @@ final class ChatStore {
         let date: Date
         let isLocal: Bool
         var conversationId: UUID = ChatStore.everyoneId
+        /// Sent while everyone it's for was away; it goes out when they're back.
+        var isHeld = false
 
         var senderTag: String { Nickname.tag(for: senderId) }
     }
@@ -142,6 +144,12 @@ final class ChatStore {
         return true
     }
 
+    /// A held message reached someone.
+    func markDelivered(_ messageId: UUID) {
+        guard let index = messages.firstIndex(where: { $0.id == messageId }), messages[index].isHeld else { return }
+        messages[index].isHeld = false
+    }
+
     /// Keeps names in chat titles current when someone renames themselves.
     func updateNickname(_ nickname: String, for memberId: String) {
         for (id, conversation) in conversations where conversation.members.contains(where: { $0.id == memberId }) {
@@ -166,10 +174,10 @@ final class ChatStore {
     // MARK: - Messages
 
     func appendText(id: UUID, senderId: String, senderName: String, text: String, isLocal: Bool,
-                    conversationId: UUID = ChatStore.everyoneId, date: Date = .now) {
+                    conversationId: UUID = ChatStore.everyoneId, date: Date = .now, isHeld: Bool = false) {
         guard !messages.contains(where: { $0.id == id }), conversations[conversationId] != nil else { return }
         append(Message(id: id, kind: .text, senderId: senderId, senderName: senderName, text: text, date: date,
-                       isLocal: isLocal, conversationId: conversationId))
+                       isLocal: isLocal, conversationId: conversationId, isHeld: isHeld))
         conversations[conversationId]?.lastActivity = date
         if !isLocal, visibleConversationId != conversationId {
             unread[conversationId, default: 0] += 1

@@ -95,6 +95,9 @@ struct MainTabView: View {
             session.chat.visibleConversationId = id
             if let id { notifications.clearDelivered(for: id) }
         }
+        .onChange(of: isChatListOnScreen, initial: true) { _, onScreen in
+            notifications.isChatListOnScreen = onScreen
+        }
         .onChange(of: session.chat.totalUnread, initial: true) { _, count in
             notifications.setBadge(count)
         }
@@ -120,6 +123,10 @@ struct MainTabView: View {
         } message: { invitation in
             Text("\(invitation.payload.seatsTaken) of \(invitation.payload.maxSeats) seats taken.")
         }
+    }
+
+    private var isChatListOnScreen: Bool {
+        app.selectedTab == .chat && !app.isMatchVisible && app.chatPath.isEmpty
     }
 
     private var visibleConversation: UUID? {
@@ -206,7 +213,9 @@ struct MatchAccessoryView: View {
         case .lobby: return "In the lobby"
         case .playing: break
         }
-        if let away = games.awayIds.first { return "Waiting for \(games.name(for: away)) to come back" }
+        if let away = games.awayIds.first {
+            return games.reconnectingIds.contains(away) ? "Reconnecting…" : "Waiting for \(games.name(for: away)) to come back"
+        }
         if games.isAwaitingMe { return "Your turn!" }
         if games.snapshot?.isFinished == true { return "Round over" }
         if let next = games.snapshot?.awaitingPlayerIds.first { return "\(games.name(for: next))'s turn" }

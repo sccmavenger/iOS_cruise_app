@@ -33,7 +33,9 @@ struct ChatView: View {
             .navigationTitle("Chats")
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: UUID.self) { id in
+                // A fresh view per chat, so drafts and notices don't carry over between chats.
                 ConversationView(conversationId: id)
+                    .id(id)
             }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -445,8 +447,17 @@ struct MessageList: View {
                 }
                 .padding()
             }
-            .defaultScrollAnchor(.bottom)
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .defaultScrollAnchor(.bottom, for: .sizeChanges)
             .scrollDismissesKeyboard(.immediately)
+            .task {
+                // Open at the newest message. The lazy stack hasn't measured its rows on the
+                // first pass, so scroll again once layout has settled.
+                guard let last = messages.last?.id else { return }
+                proxy.scrollTo(last, anchor: .bottom)
+                try? await Task.sleep(for: .milliseconds(80))
+                proxy.scrollTo(last, anchor: .bottom)
+            }
             .onChange(of: messages.last?.id) { _, last in
                 guard let last else { return }
                 withAnimation { proxy.scrollTo(last, anchor: .bottom) }
@@ -485,9 +496,15 @@ struct MessageRow: View {
                             in: RoundedRectangle(cornerRadius: 18, style: .continuous)
                         )
                         .textSelection(.enabled)
-                    Text(message.date, style: .time)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                    if message.isHeld {
+                        Label("Waiting to send", systemImage: "clock")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text(message.date, style: .time)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
                 }
                 if !message.isLocal { Spacer(minLength: 48) }
             }
@@ -517,11 +534,21 @@ struct ComposerBar: View {
                 .glassEffect(.regular, in: .rect(cornerRadius: 20))
                 .focused(isFocused)
                 .disabled(!canSend)
-                .onChange(of: draft) { _, newValue in
+                .onChange(of: draft) { oldValue, newValue in
+                    // Return sends, even when it arrives with other typed text in one change.
+                    // Line breaks inside pasted text are kept.
+                    if newValue.hasSuffix("\n"), !oldValue.hasSuffix("\n") {
+                        var text = newValue
+                        while text.last?.isNewline == true { text.removeLast() }
+                        draft = text
+                        if canSend, !trimmed.isEmpty { onSend() }
+                        return
+                    }
                     if newValue.count > EnvelopeCodec.maxChatCharacters {
                         draft = String(newValue.prefix(EnvelopeCodec.maxChatCharacters))
                     }
                 }
+                .submitLabel(.send)
 
             Button(action: onSend) {
                 Image(systemName: "arrow.up")
