@@ -59,6 +59,8 @@ import UIKit
         let installMarker = "identity.installMarker"
         if !UserDefaults.standard.bool(forKey: installMarker) {
             IdentityStore().clear()
+            // Same for an online seat: deleting the app shouldn't bring back a game from before.
+            CloudRoomStore().clear()
             UserDefaults.standard.set(true, forKey: installMarker)
         }
         var identity: IdentityStore? = IdentityStore()

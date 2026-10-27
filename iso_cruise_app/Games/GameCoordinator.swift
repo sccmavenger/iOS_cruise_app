@@ -1027,6 +1027,11 @@ final class GameCoordinator {
 
     private func enterCloudRoom(_ seat: CloudSeat) {
         guard lobby == nil, let cloud else { return }
+        // Joining a new game gives up any older one still saved (say, an invite was opened
+        // instead of returning to it), so nobody is left waiting for a player who moved on.
+        if let old = cloudStore?.load(), old.code != seat.code {
+            Task { await cloud.leaveRoom(old) }
+        }
         cloudStore?.save(seat)
         cloudSeat = seat
         let me = session.localIdentity

@@ -42,6 +42,8 @@ public enum Bridge {
         var finished: Bool?
         /// Call One!/Catch!/resign: allowed even if the player's view is a revision behind.
         var turnIndependent: Bool?
+        /// `legalMoves` only: every legal move for whoever is up (board games; used by test bots).
+        var moves: [GameMove]?
     }
 
     static let encoder: JSONEncoder = {
@@ -94,6 +96,17 @@ public enum Bridge {
         case "rematch":
             guard let state = request.state else { return Response(ok: false, error: "badRequest") }
             return result(GameEngine.rematch(from: state, using: &rng), seats: seats(of: state))
+        case "legalMoves":
+            // For test players: board games' states are public, so a bot holding the view can ask.
+            guard let state = request.state else { return Response(ok: false, error: "badRequest") }
+            let moves: [GameMove] = switch state {
+            case .ticTacToe(let s): s.board.indices.filter { s.board[$0] == nil }.map { .ticTacToe(cell: $0) }
+            case .connectFour(let s): ConnectFourRules.columnRange.filter { ConnectFourRules.landingRow(in: $0, of: s.board) != nil }.map { .connectFour(column: $0) }
+            case .checkers(let s): CheckersRules.legalSteps(in: s).map { .checkers(.move(from: $0.from, to: $0.to)) }
+            case .chess(let s): ChessRules.legalMoves(in: s).map { .chess(.move(from: $0.from, to: $0.to, promotion: $0.promotion)) }
+            case .colorMatch, .spades, .tonk: []
+            }
+            return Response(ok: true, moves: moves)
         case "views":
             // Current projections without changing anything: used when a player resumes.
             guard let state = request.state else { return Response(ok: false, error: "badRequest") }

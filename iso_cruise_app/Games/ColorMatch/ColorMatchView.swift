@@ -247,6 +247,11 @@ struct ColorMatchView: View {
     /// so it's filtered like chat before it's shown.
     private var eventText: String {
         var text = table.lastEvent
+        // The rules write "{player} draws 2 and is skipped"; for this phone's player that has to
+        // read "you draw 2 and are skipped".
+        let mine = ColorMatchRules.nameToken(games.localId)
+        text = text.replacingOccurrences(of: "\(mine) draws 2 and is skipped", with: "\(mine) draw 2 and are skipped")
+            .replacingOccurrences(of: "\(mine) is skipped", with: "\(mine) are skipped")
         for player in table.players {
             let token = ColorMatchRules.nameToken(player)
             let name = games.name(for: player)
@@ -256,6 +261,8 @@ struct ColorMatchView: View {
             }
             text = text.replacingOccurrences(of: token, with: name == "You" ? "you" : name)
         }
+        // A sentence that starts with "you" after an earlier one ("… Draw Two. you draw 2").
+        text = text.replacingOccurrences(of: ". you ", with: ". You ")
         guard !text.contains("{"), ContentFilter.shared.check(text).isAllowed else { return "" }
         return text
     }

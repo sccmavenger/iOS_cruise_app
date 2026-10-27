@@ -473,4 +473,15 @@ struct OnlineGamesTests {
         #expect(s.games.lobby?.cloudCode == "ABCD1234", "notice: \(s.games.notice ?? "none")")
         s.store.clear()
     }
+
+    @Test("Joining a new online game gives up an older saved seat, so nobody waits for us there")
+    func joiningLeavesOldSeat() async throws {
+        let s = Setup()
+        s.store.save(CloudSeat(code: "OLDD1111", seat: "seat1", token: "t", game: .chess, maxSeats: 2))
+        s.games.joinOnline(code: "ABCD1234")
+        await settle { s.games.lobby != nil && !s.cloud.leftOverHTTP.isEmpty }
+        #expect(s.cloud.leftOverHTTP == ["OLDD1111"])
+        #expect(s.store.load()?.code == "ABCD1234")
+        s.store.clear()
+    }
 }

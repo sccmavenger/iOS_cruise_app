@@ -60,6 +60,9 @@ struct PlayingCardView: View {
         .opacity(isPlayable ? 1 : 0.4)
         .offset(y: isSelected ? -10 : 0)
         .animation(.snappy(duration: 0.15), value: isSelected)
+        // One element per card: otherwise the rank and the suit each read the label ("King of
+        // Clubs, King of Clubs").
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(card.spokenName)
         .accessibilityValue(isPlayable ? "" : "Can't play this now")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])

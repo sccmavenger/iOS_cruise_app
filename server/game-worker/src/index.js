@@ -323,6 +323,7 @@ export class Room extends DurableObject {
       this.ctx.acceptWebSocket(pair[1], [row.seat]);
       pair[1].serializeAttachment({ lastSeen: Date.now() });
       this.broadcastRoster();
+      await this.syncDirectory();
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
     if (path === "/leave") {
@@ -360,9 +361,13 @@ export class Room extends DurableObject {
   async webSocketClose(ws, code) {
     try { ws.close(code === 1005 ? 1000 : code, "closing"); } catch {}
     this.broadcastRoster(ws);
+    await this.syncDirectory(ws);
   }
 
-  async webSocketError(ws) { this.broadcastRoster(ws); }
+  async webSocketError(ws) {
+    this.broadcastRoster(ws);
+    await this.syncDirectory(ws);
+  }
 
   send(ws, message) { try { ws.send(JSON.stringify(message)); } catch {} }
 
@@ -525,12 +530,17 @@ export class Room extends DurableObject {
     this.broadcastRoster();
   }
 
-  /** Lists an open lobby with a free seat in the directory, and takes it off otherwise. */
-  async syncDirectory() {
+  /**
+   * Lists an open lobby with a free seat in the directory, and takes it off otherwise. Only
+   * while its host is connected: nobody should join (or be Quick-Played into) a lobby whose host
+   * has gone. `closing`: a socket that's closing right now.
+   */
+  async syncDirectory(closing) {
     const room = this.room();
-    if (!room || !this.env.DIRECTORY) return;
+    if (!room || !this.env.DIRECTORY || room.open !== 1) return;
     const seats = this.activeSeats();
-    const listed = room.open === 1 && room.phase === "lobby" && seats.length > 0 && seats.length < room.max_seats;
+    const hostHere = this.ctx.getWebSockets(room.organizer).some((s) => s !== closing && this.isLive(s));
+    const listed = room.phase === "lobby" && hostHere && seats.length > 0 && seats.length < room.max_seats;
     const host = seats.find((s) => s.seat === room.organizer)?.nickname ?? "Player";
     await directory(this.env).fetch(listed ? "https://dir/upsert" : "https://dir/remove", {
       method: "POST",

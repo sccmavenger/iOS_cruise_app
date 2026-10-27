@@ -74,8 +74,10 @@ struct GamesHomeView: View {
             .alert(
                 games.notice ?? "",
                 isPresented: Binding(
-                    // While a match is on screen, the match shows its own notices.
-                    get: { games.notice != nil && !app.isMatchVisible },
+                    // While a match is on screen, the match shows its own notices; while one of this
+                    // screen's sheets is up, the sheet does (two alerts for one notice would make
+                    // iOS close the sheet and lose the message, as joining with a wrong code did).
+                    get: { games.notice != nil && !app.isMatchVisible && !isJoiningByCode && selectedGame == nil && !showProfile },
                     set: { if !$0 { games.notice = nil } }
                 )
             ) {

@@ -252,6 +252,8 @@ async function restart2() {
 async function openGames() {
   const listed = async (game) => (await api(`/v1/lobbies?game=${game}`)).lobbies;
   const open = await api("/v1/rooms", { game: "ticTacToe", nickname: "Ann", open: true });
+  const openHost = await new Player(open, "Ann").connect();
+  await openHost.resume();
   const hidden = await api("/v1/rooms", { game: "ticTacToe", nickname: "Pat" });
   let list = await listed("ticTacToe");
   const mine = list.find((l) => l.code === open.code);
@@ -263,8 +265,26 @@ async function openGames() {
   list = await listed("ticTacToe");
   check("A full game drops off the list", !list.some((l) => l.code === open.code));
   const fresh = await api("/v1/quickplay", { game: "ticTacToe", nickname: "Cat", avoid: list.map((l) => l.code) });
+  const freshHost = await new Player(fresh, "Cat").connect();
+  await freshHost.resume();
+  await sleep(300);
   list = await listed("ticTacToe");
   check("With nothing to join, Quick Play hosts a new open game", fresh.seat === "seat0" && list.some((l) => l.code === fresh.code));
+
+  // A lobby whose host has gone isn't listed, so nobody joins a game that will never start.
+  const away = await api("/v1/rooms", { game: "checkers", nickname: "Gone", open: true });
+  const awayHost = await new Player(away, "Gone").connect();
+  await awayHost.resume();
+  check("An open lobby is listed while its host is connected", (await listed("checkers")).some((l) => l.code === away.code));
+  awayHost.ws.terminate();
+  await sleep(1500);
+  check("…and drops off the list when the host's connection goes", !(await listed("checkers")).some((l) => l.code === away.code));
+  const hostBack = await new Player(away, "Gone").connect();
+  await hostBack.resume();
+  await sleep(300);
+  check("…and comes back when the host does", (await listed("checkers")).some((l) => l.code === away.code));
+  hostBack.send({ type: "leave" });
+  await sleep(300);
 
   // The host removes someone from the lobby.
   const players = await room("colorMatch", 3);
@@ -282,8 +302,8 @@ async function openGames() {
   await Promise.all([ann, bob].map((p) => p.seen(0)));
   players.forEach((p) => p.ws.readyState === 1 && p.close());
   // Leave the open game Quick Play created, so tests never leave games in the real list.
-  const host = await new Player(fresh, "Cat").connect();
-  host.send({ type: "leave" });
+  freshHost.send({ type: "leave" });
+  openHost.close();
   await sleep(500);
   list = await listed("ticTacToe");
   check("When its host leaves an open lobby, it drops off the list", !list.some((l) => l.code === fresh.code));
