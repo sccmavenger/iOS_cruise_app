@@ -26,6 +26,7 @@
 <li>the nickname you play under, shown to the other players in that game;</li>
 <li>a random secret that lets your phone rejoin its seat (we store only a scrambled form of it).</li>
 </ul>
+<p><strong>Open and private games.</strong> Games are open by default: while an open game waits for players, the game's name, your nickname and how many seats are taken appear in a list that everyone using CruiseLAN can see, so they can join. It leaves the list when it fills up, starts, or ends. A private game is never listed; only people you give its code to can join. The host of a game can remove a player before it starts, and anyone can report a player.</p>
 <p>There's no account and nothing that identifies you or links your games together. Your phone's internet address is seen by the service while you're connected, as with any website, and is used only to limit abuse such as guessing invite codes; it isn't stored with your games. Each game is deleted automatically: 24 hours after creation if it never starts, 7 days after the last move, or 30 days after it ends. Leaving a game removes you from it. Online chat isn't offered: chat stays between nearby phones. Cloudflare's request logs, which we use only to fix problems, are kept for a few days. Questions or deletion requests go to the address below.</p>
 <p>You can turn online games off in Profile; then every game is hosted on a phone nearby, as in earlier versions.</p>
 
@@ -38,9 +39,10 @@
 </ul>
 
 <h2>What other players can see</h2>
-<p>In an online game, the other players see your nickname, whether you're connected, and your moves. They never see your cards.</p>
+<p>In any game, the other players see your nickname, whether you're connected, and your moves. They never see your cards. There's no chat in games.</p>
 
 <h2>What nearby people can see</h2>
+<p>An open game you host on your phone (when there's no internet) is announced to CruiseLAN users nearby with your nickname, so anyone nearby can join it. A private one is only sent to the people you invite.</p>
 <p>When you're connected with someone, your phone sends your messages and game moves to their phone over encrypted Wi-Fi or Bluetooth links. If they're out of range, other CruiseLAN phones in between pass the messages along. Messages are end-to-end encrypted, so only you and the people you're talking to can read them; phones that pass them along can't. Nothing passes through us. Only accept connections from people you recognize.</p>
 <p>So people can find you, your phone shares your nickname and a short tag (like #A1B2) with CruiseLAN users nearby, including a few phones away, while CruiseLAN is open. Your phone also passes along other people's encrypted messages; it can't read them, and nothing is stored.</p>
 <p>While CruiseLAN is in the background or your phone is locked, your phone advertises a short-lived Bluetooth identifier so nearby friends you've connected with can reach it: to say it's your turn, show a preview of a new message, or deliver a game move. These Bluetooth messages are encrypted with a key that only your phone and that friend's phone share, so no one else nearby can read or fake them. The identifier changes every time the app starts. Nothing passes through us.</p>

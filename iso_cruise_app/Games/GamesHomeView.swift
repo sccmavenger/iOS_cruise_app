@@ -6,6 +6,7 @@ struct GamesHomeView: View {
     @Environment(SessionManager.self) private var session
     @Environment(AppState.self) private var app
     @Environment(OnlineStatus.self) private var online
+    @Environment(OpenGamesList.self) private var openGames
     @State private var selectedGame: GameType?
     @State private var isJoiningByCode = false
     @State private var showProfile = false
@@ -32,7 +33,7 @@ struct GamesHomeView: View {
                         Button {
                             selectedGame = game
                         } label: {
-                            GameTile(game: game, isAvailable: game.isPlayable, openCount: games.offers(for: game).count)
+                            GameTile(game: game, isAvailable: game.isPlayable, openCount: openCount(for: game))
                         }
                         .buttonStyle(.plain)
                         .disabled(!game.isPlayable)
@@ -49,6 +50,8 @@ struct GamesHomeView: View {
                 }
             }
             .navigationTitle("Games")
+            .onAppear { openGames.startWatching() }
+            .onDisappear { openGames.stopWatching() }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Profile", systemImage: "person.crop.circle") { showProfile = true }
@@ -80,14 +83,31 @@ struct GamesHomeView: View {
     }
 }
 
-/// Host a new game or join an open one for a single title.
+/// Play a title: Quick Play, host (open to anyone, or private), or pick an open game.
 struct GameDetailSheet: View {
     let game: GameType
     @Environment(GameCoordinator.self) private var games
     @Environment(SessionManager.self) private var session
-    @Environment(OnlineStatus.self) private var online
     @Environment(AppState.self) private var app
+    @Environment(OnlineStatus.self) private var online
+    @Environment(OpenGamesList.self) private var openGames
     @Environment(\.dismiss) private var dismiss
+    /// Open (anyone can join) is the default; private is the option.
+    @State private var hostOpen = true
+
+    private var isBusy: Bool { games.lobby != nil || games.joiningLobbyId != nil || games.isConnectingOnline }
+
+    /// Online open games for this title, plus games hosted on phones nearby. A nearby friend's
+    /// online game shows once, as an online game.
+    private var onlineGames: [OpenGame] {
+        guard online.canPlayOnline else { return [] }
+        return openGames.games(for: game, excluding: games.removedFromCodes.union(games.lobby?.cloudCode.map { [$0] } ?? []))
+    }
+
+    private var nearbyOffers: [GameCoordinator.Offer] {
+        let listed = Set(onlineGames.map(\.code))
+        return games.offers(for: game).filter { $0.payload.cloudCode.map { !listed.contains($0) } ?? true }
+    }
 
     var body: some View {
         NavigationStack {
@@ -120,53 +140,71 @@ struct GameDetailSheet: View {
                 }
 
                 Section {
-                    let canHost = games.lobby == nil && games.joiningLobbyId == nil && !games.isConnectingOnline
                     Button {
-                        games.hostLobby(game)
+                        games.quickPlay(game)
+                        dismiss()
+                    } label: {
+                        Label("Quick Play", systemImage: "bolt.fill")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .disabled(isBusy)
+                    .listRowBackground(Color.clear)
+                } footer: {
+                    Text(online.canPlayOnline
+                         ? "Joins an open game that's waiting for players, or starts one that anyone can join."
+                         : "Joins an open game nearby, or starts one that anyone nearby can join.")
+                }
+
+                Section {
+                    Picker("Who can join", selection: $hostOpen) {
+                        Text("Anyone").tag(true)
+                        Text("Private").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                    Button {
+                        games.hostLobby(game, open: hostOpen)
                         dismiss()
                     } label: {
                         // Grey the whole row (icon included) when it can't be used, so it doesn't look tappable.
-                        Label(online.canPlayOnline ? "Host a New Online Game" : "Host a New Game", systemImage: "plus.circle.fill")
-                            .foregroundStyle(canHost ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
+                        Label("Host a New Game", systemImage: "plus.circle.fill")
+                            .foregroundStyle(isBusy ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.tint))
                     }
-                    .disabled(!canHost)
+                    .disabled(isBusy)
+                } header: {
+                    Text("Host")
                 } footer: {
-                    Text(online.canPlayOnline
-                         ? "Hosted online, so it keeps going even if your phone drops out. You get a code to share with anyone, anywhere, and nearby friends see it too."
-                         : "Hosted on your phone. Anyone nearby with CruiseLAN open sees your game and can join.")
+                    Text(hostFooter)
                 }
 
-                Section("Open games nearby") {
-                    let offers = games.offers(for: game)
-                    if offers.isEmpty {
-                        Text(session.nearbyPlayers.isEmpty ? "Nobody nearby has CruiseLAN open right now." : "No open games nearby right now. Host one and they'll see it.")
+                Section("Open games") {
+                    if onlineGames.isEmpty, nearbyOffers.isEmpty {
+                        Text(online.canPlayOnline || !session.nearbyPlayers.isEmpty
+                             ? "No open games right now. Host one, or use Quick Play."
+                             : "Nobody nearby has CruiseLAN open right now.")
                             .foregroundStyle(.secondary)
                     }
-                    ForEach(offers) { offer in
+                    ForEach(onlineGames) { entry in
+                        Button {
+                            games.joinOnline(code: entry.code)
+                            dismiss()
+                        } label: {
+                            OpenGameRow(host: entry.host, seats: entry.seats, maxSeats: entry.maxSeats, place: "Online", isJoining: false)
+                        }
+                        .disabled(isBusy)
+                        .accessibilityHint("Joins this game")
+                    }
+                    ForEach(nearbyOffers) { offer in
                         Button {
                             games.join(offer)
                             // Close right away so the game screen can appear when the host accepts.
                             dismiss()
                         } label: {
-                            HStack {
-                                VStack(alignment: .leading) {
-                                    Text("\(offer.host.labeledName)'s game")
-                                        .foregroundStyle(.primary)
-                                    Text("\(offer.payload.seatsTaken) of \(offer.payload.maxSeats) seats taken\(offer.payload.cloudCode == nil ? "" : " · online")")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if games.joiningLobbyId == offer.id {
-                                    ProgressView()
-                                } else {
-                                    Text(offer.isFull ? "Full" : "Join")
-                                        .fontWeight(.semibold)
-                                        .foregroundStyle(offer.isFull ? Color.secondary : Theme.teal)
-                                }
-                            }
+                            OpenGameRow(host: offer.host.labeledName, seats: offer.payload.seatsTaken, maxSeats: offer.payload.maxSeats,
+                                        place: offer.payload.cloudCode == nil ? "Nearby" : "Online", isJoining: games.joiningLobbyId == offer.id)
                         }
-                        .disabled(offer.isFull || games.joiningLobbyId != nil || games.lobby != nil)
+                        .disabled(offer.isFull || isBusy)
                         .accessibilityHint("Asks the host for a seat")
                     }
                 }
@@ -180,6 +218,46 @@ struct GameDetailSheet: View {
             }
             .onChange(of: games.lobby?.id) { _, id in
                 if id != nil { dismiss() }
+            }
+            .onAppear { openGames.startWatching() }
+            .onDisappear { openGames.stopWatching() }
+        }
+    }
+
+    private var hostFooter: String {
+        switch (online.canPlayOnline, hostOpen) {
+        case (true, true): "Anyone using CruiseLAN can find it and join, from anywhere. You also get a code to share."
+        case (true, false): "Only people you give the code to can join."
+        case (false, true): "Hosted on your phone. Anyone nearby with CruiseLAN open sees it and can join."
+        case (false, false): "Hosted on your phone. Only people you invite from the lobby can join."
+        }
+    }
+}
+
+/// One open game in the list: whose it is, how full, and where it's hosted.
+struct OpenGameRow: View {
+    let host: String
+    let seats: Int
+    let maxSeats: Int
+    let place: String
+    let isJoining: Bool
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading) {
+                Text("\(host)'s game")
+                    .foregroundStyle(.primary)
+                Text("\(seats) of \(maxSeats) seats taken · \(place)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if isJoining {
+                ProgressView()
+            } else {
+                Text(seats >= maxSeats ? "Full" : "Join")
+                    .fontWeight(.semibold)
+                    .foregroundStyle(seats >= maxSeats ? Color.secondary : Theme.teal)
             }
         }
     }
@@ -284,6 +362,16 @@ struct JoinOnlineSheet: View {
     }
 }
 
+extension GamesHomeView {
+    /// Open games for a title: online ones plus phone-hosted ones nearby.
+    fileprivate func openCount(for game: GameType) -> Int {
+        let online = self.online.canPlayOnline ? openGames.games(for: game, excluding: games.removedFromCodes) : []
+        let listed = Set(online.map(\.code))
+        let nearby = games.offers(for: game).filter { $0.payload.cloudCode.map { !listed.contains($0) } ?? true }
+        return online.count + nearby.count
+    }
+}
+
 struct GameTile: View {
     let game: GameType
     let isAvailable: Bool
@@ -306,7 +394,7 @@ struct GameTile: View {
                 if !isAvailable {
                     pill("Coming soon", tint: nil)
                 } else if openCount > 0 {
-                    pill(openCount == 1 ? "1 open game nearby" : "\(openCount) open games nearby", tint: Theme.teal)
+                    pill(openCount == 1 ? "1 open game" : "\(openCount) open games", tint: Theme.teal)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

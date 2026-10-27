@@ -33,6 +33,17 @@ nonisolated struct CloudSeat: Codable, Equatable, Sendable {
     var maxSeats: Int
 }
 
+/// An open online game waiting for players, from the service's list.
+nonisolated struct OpenGame: Codable, Equatable, Sendable, Identifiable {
+    var code: String
+    var game: GameType
+    var host: String
+    var seats: Int
+    var maxSeats: Int
+
+    var id: String { code }
+}
+
 /// The server's view of the table, sent whenever someone joins, connects, leaves or votes.
 nonisolated struct CloudRoster: Codable, Equatable, Sendable {
     enum Phase: String, Codable, Sendable {
@@ -53,6 +64,8 @@ nonisolated struct CloudRoster: Codable, Equatable, Sendable {
     var organizer: String
     var endedMessage: String?
     var you: String
+    /// Listed for everyone (rather than code-only). Absent from older servers.
+    var open: Bool?
     var players: [Player]
     var rematchVotes: [String]
 }
@@ -96,8 +109,10 @@ nonisolated enum CloudClientMessage: Encodable, Equatable, Sendable {
     case move(MoveRequestPayload)
     case rematch
     case leave
+    /// The host removes a player from the lobby.
+    case kick(seat: String)
 
-    private enum Keys: String, CodingKey { case type, moveId, baseRevision, move }
+    private enum Keys: String, CodingKey { case type, moveId, baseRevision, move, seat }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: Keys.self)
@@ -106,6 +121,9 @@ nonisolated enum CloudClientMessage: Encodable, Equatable, Sendable {
         case .start: try container.encode("start", forKey: .type)
         case .rematch: try container.encode("rematch", forKey: .type)
         case .leave: try container.encode("leave", forKey: .type)
+        case .kick(let seat):
+            try container.encode("kick", forKey: .type)
+            try container.encode(seat, forKey: .seat)
         case .move(let request):
             try container.encode("move", forKey: .type)
             try container.encode(request.moveId.uuidString, forKey: .moveId)

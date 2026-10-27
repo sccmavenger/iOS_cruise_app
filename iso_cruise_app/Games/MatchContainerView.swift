@@ -6,6 +6,12 @@ struct MatchContainerView: View {
     @Environment(AppState.self) private var app
     @Environment(SessionManager.self) private var session
     @State private var confirmLeave = false
+    @State private var reportTarget: ReportTarget?
+
+    /// The other people at the table, for reporting during a match.
+    private var otherPlayers: [LobbyPlayer] {
+        games.lobby?.players.filter { $0.id != games.localId } ?? []
+    }
 
     var body: some View {
         @Bindable var games = games
@@ -43,6 +49,19 @@ struct MatchContainerView: View {
                     }
                     .accessibilityHint("Opens the chat with the players in this game. The game keeps going and you can come back anytime.")
                 } }
+                if games.lobby?.phase != .lobby, !otherPlayers.isEmpty {
+                    ToolbarItem(placement: .primaryAction) {
+                        Menu {
+                            ForEach(otherPlayers) { player in
+                                Button("Report \(player.nickname)", systemImage: "exclamationmark.bubble") {
+                                    reportTarget = ReportTarget(identityId: player.id, name: player.nickname, message: nil, onlineCode: games.lobby?.cloudCode)
+                                }
+                            }
+                        } label: {
+                            Label("Report a Player", systemImage: "exclamationmark.bubble")
+                        }
+                    }
+                }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Leave", role: .destructive) {
                         if case .ended = games.lobby?.phase {
@@ -53,6 +72,7 @@ struct MatchContainerView: View {
                     }
                 }
             }
+            .sheet(item: $reportTarget) { ReportView(target: $0) }
             .alert("Leave this game?", isPresented: $confirmLeave) {
                 Button("Leave Game", role: .destructive) { games.leave() }
                 Button("Stay", role: .cancel) {}
@@ -93,6 +113,7 @@ struct LobbyView: View {
     let lobby: GameCoordinator.Lobby
     @Environment(GameCoordinator.self) private var games
     @Environment(SessionManager.self) private var session
+    @State private var reportTarget: ReportTarget?
 
     private var me: LobbyPlayer? { lobby.player(games.localId) }
 
@@ -122,7 +143,7 @@ struct LobbyView: View {
                 OnlineCodeSection(code: code, game: lobby.gameType, isConnected: games.isCloudConnected)
             }
 
-            Section("Players") {
+            Section {
                 ForEach(lobby.players) { player in
                     HStack {
                         Image(systemName: player.isHost ? "crown.fill" : "person.fill")
@@ -142,8 +163,24 @@ struct LobbyView: View {
                             Label(player.isReady ? "Ready" : "Not ready", systemImage: player.isReady ? "checkmark.circle.fill" : "circle.dashed")
                                 .foregroundStyle(player.isReady ? .green : .secondary)
                         }
+                        if player.id != games.localId {
+                            Menu {
+                                if games.isHost {
+                                    Button("Remove from Game", systemImage: "person.fill.xmark", role: .destructive) {
+                                        games.removePlayer(player.id)
+                                    }
+                                }
+                                Button("Report \(player.nickname)", systemImage: "exclamationmark.bubble") {
+                                    reportTarget = ReportTarget(identityId: player.id, name: player.nickname, message: nil, onlineCode: lobby.cloudCode)
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
+                                    .imageScale(.large)
+                                    .accessibilityLabel("Options for \(player.nickname)")
+                            }
+                        }
                     }
-                    .accessibilityElement(children: .combine)
+                    .accessibilityElement(children: .contain)
                 }
                 ForEach(lobby.players.count..<lobby.maxSeats, id: \.self) { _ in
                     HStack {
@@ -154,6 +191,13 @@ struct LobbyView: View {
                         Text("Open seat").foregroundStyle(.secondary)
                     }
                 }
+            } header: {
+                Text("Players")
+            } footer: {
+                Label(lobby.isOpen
+                      ? (lobby.isOnline ? "Open game: anyone using CruiseLAN can find and join it." : "Open game: anyone nearby with CruiseLAN can join.")
+                      : (lobby.isOnline ? "Private game: only people with the code can join." : "Private game: only people you invite can join."),
+                      systemImage: lobby.isOpen ? "person.3.fill" : "lock.fill")
             }
 
             if games.isHost {
@@ -232,6 +276,7 @@ struct LobbyView: View {
                 }
             }
         }
+        .sheet(item: $reportTarget) { ReportView(target: $0) }
     }
 }
 

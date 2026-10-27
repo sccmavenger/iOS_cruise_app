@@ -3,8 +3,11 @@
 //
 // HTTP
 //   GET  /v1/health                      → { ok, protocol }
-//   POST /v1/rooms        { game, nickname }  → { code, seat, token, game, maxSeats }
+//   POST /v1/rooms        { game, nickname, open? }  → { code, seat, token, game, maxSeats }
+//        open: true lists the game for everyone (default false, private: code only)
 //   POST /v1/rooms/:code/join { nickname }    → same
+//   GET  /v1/lobbies[?game=]              → { lobbies: [{ code, game, host, seats, maxSeats }] } (open games)
+//   POST /v1/quickplay    { game, nickname, avoid? } → seat in the longest-waiting open game, or a new one
 //   GET  /v1/rooms/:code/socket  (Authorization: Bearer <token>, WebSocket upgrade)
 //
 // WebSocket, client → server
@@ -12,6 +15,7 @@
 //   { type: "start" }                       organizer starts the game
 //   { type: "move", moveId, baseRevision, move }
 //   { type: "rematch" } | { type: "leave" } | { type: "ping", t }
+//   { type: "kick", seat }                  organizer removes a player before the game starts
 //   "ping" (plain text, every 25 s): answered "pong" by Cloudflare without waking the room; it keeps
 //   the seat marked as connected
 // server → client
@@ -70,6 +74,19 @@ async function limited(limiter, key) {
   return !success;
 }
 
+const directory = (env) => env.DIRECTORY.get(env.DIRECTORY.idFromName("global"));
+
+async function createRoom(env, game, nickname, open) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const code = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => CODE_ALPHABET[b & 31]).join("");
+    const response = await env.ROOMS.get(env.ROOMS.idFromName(code)).fetch("https://room/create", {
+      method: "POST", body: JSON.stringify({ code, game, nickname, open }),
+    });
+    if (response.status !== 409) return response;
+  }
+  return json({ error: "tryAgain" }, 503);
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -83,14 +100,30 @@ export default {
       if (await limited(env.CREATE_LIMITER, ip)) return json({ error: "rateLimited" }, 429);
       const body = await readJSON(request);
       if (!body || !GAMES[body.game]) return json({ error: "badRequest" }, 400);
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const code = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => CODE_ALPHABET[b & 31]).join("");
-        const response = await env.ROOMS.get(env.ROOMS.idFromName(code)).fetch("https://room/create", {
-          method: "POST", body: JSON.stringify({ code, game: body.game, nickname: body.nickname }),
+      return createRoom(env, body.game, body.nickname, body.open === true);
+    }
+
+    if (request.method === "GET" && parts[1] === "lobbies" && parts.length === 2) {
+      const game = url.searchParams.get("game");
+      const list = await directory(env).fetch(`https://dir/list${game && GAMES[game] ? `?game=${game}` : ""}`);
+      return json(await list.json());
+    }
+
+    if (request.method === "POST" && parts[1] === "quickplay" && parts.length === 2) {
+      if (await limited(env.JOIN_LIMITER, ip)) return json({ error: "rateLimited" }, 429);
+      const body = await readJSON(request);
+      if (!body || !GAMES[body.game]) return json({ error: "badRequest" }, 400);
+      const avoid = new Set(Array.isArray(body.avoid) ? body.avoid.slice(0, 20).map(String) : []);
+      const { lobbies } = await (await directory(env).fetch(`https://dir/list?game=${body.game}&oldestFirst=1`)).json();
+      // Seat the player in the game that's been waiting longest; another player may take the
+      // last seat first, so try the next one.
+      for (const lobby of lobbies.filter((l) => !avoid.has(l.code)).slice(0, 5)) {
+        const joined = await env.ROOMS.get(env.ROOMS.idFromName(lobby.code)).fetch("https://room/join", {
+          method: "POST", body: JSON.stringify({ nickname: body.nickname }),
         });
-        if (response.status !== 409) return response;
+        if (joined.status === 200) return joined;
       }
-      return json({ error: "tryAgain" }, 503);
+      return createRoom(env, body.game, body.nickname, true);
     }
 
     if (parts[1] === "rooms" && parts.length === 4) {
@@ -125,6 +158,8 @@ export class Room extends DurableObject {
       CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL, revision INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS moves (move_id TEXT PRIMARY KEY, seat TEXT NOT NULL, revision INTEGER NOT NULL, outcome TEXT NOT NULL, at INTEGER NOT NULL);
     `);
+    // Added after launch: rooms from before it are private.
+    try { this.sql.exec("ALTER TABLE room ADD COLUMN open INTEGER NOT NULL DEFAULT 0"); } catch {}
   }
 
   // MARK: storage helpers
@@ -155,12 +190,13 @@ export class Room extends DurableObject {
     const path = new URL(request.url).pathname;
     if (path === "/create") {
       if (this.room()) return json({ error: "codeTaken" }, 409);
-      const { code, game, nickname } = await request.json();
+      const { code, game, nickname, open } = await request.json();
       const now = Date.now();
-      this.sql.exec("INSERT INTO room (id, code, game, phase, min_seats, max_seats, organizer, created_at, updated_at) VALUES (1, ?, ?, 'lobby', ?, ?, 'seat0', ?, ?)",
-        code, game, GAMES[game].min, GAMES[game].max, now, now);
+      this.sql.exec("INSERT INTO room (id, code, game, phase, min_seats, max_seats, organizer, created_at, updated_at, open) VALUES (1, ?, ?, 'lobby', ?, ?, 'seat0', ?, ?, ?)",
+        code, game, GAMES[game].min, GAMES[game].max, now, now, open ? 1 : 0);
       const { seat, token } = await this.addSeat(nickname);
       await this.touch();
+      await this.syncDirectory();
       return json({ code, seat, token, game, maxSeats: GAMES[game].max });
     }
     if (path === "/join") {
@@ -171,6 +207,7 @@ export class Room extends DurableObject {
       const { nickname } = await request.json();
       const { seat, token } = await this.addSeat(nickname);
       this.broadcastRoster();
+      await this.syncDirectory();
       return json({ code: room.code, seat, token, game: room.game, maxSeats: room.max_seats });
     }
     if (path === "/socket") {
@@ -208,6 +245,7 @@ export class Room extends DurableObject {
       case "move": return this.move(ws, seat, msg);
       case "rematch": return this.rematch(seat);
       case "leave": return this.leave(seat);
+      case "kick": return this.kick(ws, seat, msg.seat);
       default: return this.send(ws, { type: "error", error: "unknownType" });
     }
   }
@@ -229,7 +267,7 @@ export class Room extends DurableObject {
     return {
       type: "roster", protocol: PROTOCOL, code: room.code, game: room.game, phase: room.phase,
       minSeats: room.min_seats, maxSeats: room.max_seats, organizer: room.organizer, endedMessage: room.ended_message,
-      you: seat, players: seats.map((s) => ({ seat: s.seat, nickname: s.nickname, connected: connected.has(s.seat) })),
+      you: seat, open: room.open === 1, players: seats.map((s) => ({ seat: s.seat, nickname: s.nickname, connected: connected.has(s.seat) })),
       rematchVotes: seats.filter((s) => s.rematch).map((s) => s.seat),
     };
   }
@@ -276,6 +314,7 @@ export class Room extends DurableObject {
       this.sql.exec("UPDATE room SET phase = 'playing', turn_revision = 0 WHERE id = 1");
     });
     await this.touch();
+    await this.syncDirectory();
     this.broadcastRoster();
     this.broadcastViews(result.views, 0);
   }
@@ -360,8 +399,36 @@ export class Room extends DurableObject {
       this.sql.exec("UPDATE room SET phase = 'ended', ended_message = ? WHERE id = 1", `${name} left the game. The match has ended.`);
     }
     await this.touch();
+    await this.syncDirectory();
     for (const ws of this.ctx.getWebSockets(seat)) { try { ws.close(4000, "left"); } catch {} }
     this.broadcastRoster();
+  }
+
+  /** The organizer removes someone before the game starts. Their seat is gone for good. */
+  async kick(ws, seat, target) {
+    const room = this.room();
+    if (room.phase !== "lobby" || seat !== room.organizer || target === seat || typeof target !== "string") {
+      return this.send(ws, { type: "error", error: "notAllowed" });
+    }
+    const written = this.sql.exec("UPDATE seats SET active = 0 WHERE seat = ? AND active = 1", target).rowsWritten;
+    if (written !== 1) return;
+    await this.touch();
+    await this.syncDirectory();
+    for (const s of this.ctx.getWebSockets(target)) { try { s.close(4001, "removed"); } catch {} }
+    this.broadcastRoster();
+  }
+
+  /** Lists an open lobby with a free seat in the directory, and takes it off otherwise. */
+  async syncDirectory() {
+    const room = this.room();
+    if (!room || !this.env.DIRECTORY) return;
+    const seats = this.activeSeats();
+    const listed = room.open === 1 && room.phase === "lobby" && seats.length > 0 && seats.length < room.max_seats;
+    const host = seats.find((s) => s.seat === room.organizer)?.nickname ?? "Player";
+    await directory(this.env).fetch(listed ? "https://dir/upsert" : "https://dir/remove", {
+      method: "POST",
+      body: JSON.stringify({ code: room.code, game: room.game, host, seats: seats.length, maxSeats: room.max_seats, createdAt: room.created_at }),
+    });
   }
 
   async alarm() {
@@ -369,7 +436,52 @@ export class Room extends DurableObject {
     if (!room) return;
     const expires = (room.phase === "lobby" ? room.created_at : room.updated_at) + TTL[room.phase];
     if (Date.now() < expires) return this.ctx.storage.setAlarm(expires);
+    if (room.open === 1 && this.env.DIRECTORY) {
+      await directory(this.env).fetch("https://dir/remove", { method: "POST", body: JSON.stringify({ code: room.code }) });
+    }
     for (const ws of this.ctx.getWebSockets()) { try { ws.close(4404, "room expired"); } catch {} }
     await this.ctx.storage.deleteAll();
+  }
+}
+
+/**
+ * The list of open lobbies with a free seat, so anyone can find a game without a code.
+ * One instance ("global"). Rooms keep it current: they add themselves while open and waiting,
+ * and remove themselves when full, started, ended or expired. Entries older than a lobby can
+ * live (24 h) are dropped regardless.
+ */
+export class LobbyDirectory extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.sql = ctx.storage.sql;
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS lobbies (
+      code TEXT PRIMARY KEY, game TEXT NOT NULL, host TEXT NOT NULL, seats INTEGER NOT NULL,
+      max_seats INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`);
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+    if (url.pathname === "/upsert") {
+      const l = await request.json();
+      this.sql.exec(`INSERT INTO lobbies (code, game, host, seats, max_seats, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(code) DO UPDATE SET host = excluded.host, seats = excluded.seats, updated_at = excluded.updated_at`,
+        l.code, l.game, l.host, l.seats, l.maxSeats, l.createdAt, Date.now());
+      return json({ ok: true });
+    }
+    if (url.pathname === "/remove") {
+      const { code } = await request.json();
+      this.sql.exec("DELETE FROM lobbies WHERE code = ?", code);
+      return json({ ok: true });
+    }
+    if (url.pathname === "/list") {
+      this.sql.exec("DELETE FROM lobbies WHERE created_at < ?", Date.now() - TTL.lobby);
+      const game = url.searchParams.get("game");
+      const order = url.searchParams.get("oldestFirst") ? "created_at ASC" : "created_at DESC";
+      const rows = game
+        ? this.sql.exec(`SELECT * FROM lobbies WHERE game = ? AND seats < max_seats ORDER BY ${order} LIMIT 50`, game).toArray()
+        : this.sql.exec(`SELECT * FROM lobbies WHERE seats < max_seats ORDER BY ${order} LIMIT 50`).toArray();
+      return json({ lobbies: rows.map((r) => ({ code: r.code, game: r.game, host: r.host, seats: r.seats, maxSeats: r.max_seats })) });
+    }
+    return json({ error: "notFound" }, 404);
   }
 }

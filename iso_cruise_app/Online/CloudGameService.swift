@@ -5,8 +5,14 @@ protocol CloudGameService: AnyObject {
     /// Whether the service answers right now: the real test for "online", since a network can
     /// look connected (captive portals, guest Wi-Fi before sign-in) and still not reach it.
     func checkHealth() async -> Bool
-    func createRoom(_ game: GameType, nickname: String) async throws(CloudError) -> CloudSeat
+    /// `open`: listed for everyone; otherwise only people with the code can join.
+    func createRoom(_ game: GameType, nickname: String, open: Bool) async throws(CloudError) -> CloudSeat
     func joinRoom(code: String, nickname: String) async throws(CloudError) -> CloudSeat
+    /// Open games waiting for players, newest first. Nil if the service can't be reached.
+    func openGames() async -> [OpenGame]?
+    /// A seat in the open game that's waited longest, or a new open game if there's none.
+    /// `avoid`: codes of games not to join (ones this player was removed from).
+    func quickPlay(_ game: GameType, nickname: String, avoid: [String]) async throws(CloudError) -> CloudSeat
     /// Opens the room's live connection. It reconnects by itself until closed.
     func openRoom(_ seat: CloudSeat, onEvent: @escaping (CloudRoomEvent) -> Void) -> any CloudRoomConnection
 }
@@ -26,6 +32,8 @@ enum CloudRoomEvent: Equatable {
     case message(CloudServerMessage)
     /// The room expired, or our seat is no longer in it. Reconnecting won't help.
     case roomGone
+    /// The host removed this player from the lobby.
+    case removed
 }
 
 /// The real service, over HTTPS and a WebSocket.
@@ -52,8 +60,29 @@ final class LiveCloudGameService: CloudGameService {
         return health.ok && health.protocol >= CloudConfig.protocolVersion
     }
 
-    func createRoom(_ game: GameType, nickname: String) async throws(CloudError) -> CloudSeat {
-        try await post("v1/rooms", body: ["game": game.rawValue, "nickname": nickname])
+    func createRoom(_ game: GameType, nickname: String, open: Bool) async throws(CloudError) -> CloudSeat {
+        try await post("v1/rooms", body: ["game": game.rawValue, "nickname": nickname, "open": open])
+    }
+
+    func openGames() async -> [OpenGame]? {
+        var request = URLRequest(url: baseURL.appending(path: "v1/lobbies"))
+        request.timeoutInterval = 8
+        guard let (data, response) = try? await session.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200
+        else { return nil }
+        // Skip entries for games this build doesn't know, rather than failing the whole list.
+        struct Lenient: Decodable {
+            var lobbies: [Entry]
+            struct Entry: Decodable {
+                var value: OpenGame?
+                init(from decoder: Decoder) throws { value = try? OpenGame(from: decoder) }
+            }
+        }
+        return (try? JSONDecoder().decode(Lenient.self, from: data))?.lobbies.compactMap(\.value)
+    }
+
+    func quickPlay(_ game: GameType, nickname: String, avoid: [String]) async throws(CloudError) -> CloudSeat {
+        try await post("v1/quickplay", body: ["game": game.rawValue, "nickname": nickname, "avoid": avoid])
     }
 
     func joinRoom(code: String, nickname: String) async throws(CloudError) -> CloudSeat {
@@ -66,11 +95,11 @@ final class LiveCloudGameService: CloudGameService {
         WebSocketRoomConnection(seat: seat, baseURL: baseURL, session: session, onEvent: onEvent)
     }
 
-    private func post(_ path: String, body: [String: String]) async throws(CloudError) -> CloudSeat {
+    private func post(_ path: String, body: [String: any Sendable]) async throws(CloudError) -> CloudSeat {
         var request = URLRequest(url: baseURL.appending(path: path))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONEncoder().encode(body)
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         let data: Data, response: URLResponse
         do { (data, response) = try await session.data(for: request) } catch { throw .unreachable }
         struct Failure: Decodable { var error: String }
@@ -218,6 +247,11 @@ final class WebSocketRoomConnection: CloudRoomConnection {
         // The server refused the seat (401/404/410) or closed the room (4404) or our seat (4000).
         let status = (task?.response as? HTTPURLResponse)?.statusCode
         let closeCode = task?.closeCode.rawValue ?? 0
+        if closeCode == 4001 {
+            close()
+            onEvent(.removed)
+            return
+        }
         if [401, 404, 410].contains(status) || closeCode == 4404 || closeCode == 4000 {
             close()
             onEvent(.roomGone)

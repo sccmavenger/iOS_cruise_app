@@ -755,8 +755,9 @@ final class SessionManager {
     }
 
     /// Plain-text report body for the Mail composer. Contains only what's on screen.
-    func reportBody(about identityId: String, message: String?, reason: String) -> String {
-        let name = knownIdentities[identityId]?.labeledName ?? directory[identityId]?.labeledName ?? "Unknown"
+    /// `name` and `onlineGame` describe a player in an online game, who has no mesh identity.
+    func reportBody(about identityId: String, message: String?, reason: String, name shownName: String? = nil, onlineGame: String? = nil) -> String {
+        let name = knownIdentities[identityId]?.labeledName ?? directory[identityId]?.labeledName ?? shownName ?? "Unknown"
         var lines = [
             "CruiseLAN safety report",
             "Reason: \(reason)",
@@ -766,6 +767,7 @@ final class SessionManager {
             "App version: \(Bundle.main.versionString)",
         ]
         if let message { lines.append("Message: \"\(message)\"") }
+        if let onlineGame { lines.append("Online game: \(onlineGame) (seat \(identityId))") }
         return lines.joined(separator: "\n")
     }
 

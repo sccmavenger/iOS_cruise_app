@@ -5,6 +5,9 @@ struct ReportTarget: Identifiable, Equatable {
     let identityId: String
     let name: String
     let message: String?
+    /// Set for a player in an online game: their seat has no identity beyond that game, so the
+    /// report names the game instead, and there's nothing on this phone to block.
+    var onlineCode: String? = nil
 
     var id: String { identityId + (message ?? "") }
 }
@@ -36,9 +39,15 @@ struct ReportView: View {
             Form {
                 if didReport {
                     Section {
-                        Label("\(target.name) is blocked", systemImage: "checkmark.shield.fill")
-                            .foregroundStyle(.green)
-                        Text("You won't see their messages or invitations anymore.")
+                        if target.onlineCode == nil {
+                            Label("\(target.name) is blocked", systemImage: "checkmark.shield.fill")
+                                .foregroundStyle(.green)
+                            Text("You won't see their games, messages or invitations anymore.")
+                        } else {
+                            Label("Thanks for telling us", systemImage: "checkmark.shield.fill")
+                                .foregroundStyle(.green)
+                            Text("You can leave this game at any time. A host can also remove a player from the lobby.")
+                        }
                         Text("If someone made you feel unsafe or uncomfortable, tell a parent or a crew member right away.")
                             .fontWeight(.semibold)
                     }
@@ -60,7 +69,7 @@ struct ReportView: View {
                     } header: {
                         Text("Report \(target.name)")
                     } footer: {
-                        Text("Reporting also blocks this person on your phone.")
+                        Text(target.onlineCode == nil ? "Reporting also blocks this person on your phone." : "The report names this online game so we can look into it.")
                     }
 
                     if let message = target.message {
@@ -73,7 +82,7 @@ struct ReportView: View {
                         Button(role: .destructive) {
                             submit()
                         } label: {
-                            Text("Block and Report")
+                            Text(target.onlineCode == nil ? "Block and Report" : "Report")
                                 .frame(maxWidth: .infinity)
                         }
                     }
@@ -90,8 +99,9 @@ struct ReportView: View {
     }
 
     private func submit() {
-        let body = session.reportBody(about: target.identityId, message: target.message, reason: reason.rawValue)
-        session.block(identityId: target.identityId)
+        let body = session.reportBody(about: target.identityId, message: target.message, reason: reason.rawValue,
+                                      name: target.name, onlineGame: target.onlineCode.map(CloudConfig.displayCode))
+        if target.onlineCode == nil { session.block(identityId: target.identityId) }
         didReport = true
         if let email = SafetyConfig.reportEmail, let url = Self.mailURL(to: email, body: body) {
             openURL(url) { accepted in

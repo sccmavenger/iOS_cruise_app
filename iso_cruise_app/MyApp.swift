@@ -18,6 +18,8 @@ import UIKit
     @State private var connectionSettings: ConnectionSettings
     /// Whether games can be hosted online right now.
     @State private var online: OnlineStatus
+    /// Open online games anyone can join.
+    @State private var openGames: OpenGamesList
     #if DEBUG
     /// Scripted screenshot scene, when launched with `-CruiseLANDemo <scene>`.
     @State private var demo: DemoMode?
@@ -105,6 +107,7 @@ import UIKit
         _lan = State(initialValue: lan)
         _connectionSettings = State(initialValue: connectionSettings)
         _online = State(initialValue: online)
+        _openGames = State(initialValue: OpenGamesList(service: cloudService))
     }
 
     var body: some Scene {
@@ -120,6 +123,7 @@ import UIKit
                 .environment(\.lanTransport, lan)
                 .environment(connectionSettings)
                 .environment(online)
+                .environment(openGames)
                 .task(id: profile.nickname) {
                     #if DEBUG
                     if let demo {

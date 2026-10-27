@@ -249,6 +249,46 @@ async function restart2() {
   players.forEach((p) => p.close());
 }
 
+async function openGames() {
+  const listed = async (game) => (await api(`/v1/lobbies?game=${game}`)).lobbies;
+  const open = await api("/v1/rooms", { game: "ticTacToe", nickname: "Ann", open: true });
+  const hidden = await api("/v1/rooms", { game: "ticTacToe", nickname: "Pat" });
+  let list = await listed("ticTacToe");
+  const mine = list.find((l) => l.code === open.code);
+  check("An open game is listed for everyone, with its host and seats", mine?.host === "Ann" && mine.seats === 1 && mine.maxSeats === 2);
+  check("A private game isn't listed", !list.some((l) => l.code === hidden.code));
+  const others = list.filter((l) => l.code !== open.code).map((l) => l.code);
+  const quick = await api("/v1/quickplay", { game: "ticTacToe", nickname: "Bob", avoid: others });
+  check("Quick Play seats you in a waiting open game", quick.code === open.code && quick.seat === "seat1");
+  list = await listed("ticTacToe");
+  check("A full game drops off the list", !list.some((l) => l.code === open.code));
+  const fresh = await api("/v1/quickplay", { game: "ticTacToe", nickname: "Cat", avoid: list.map((l) => l.code) });
+  list = await listed("ticTacToe");
+  check("With nothing to join, Quick Play hosts a new open game", fresh.seat === "seat0" && list.some((l) => l.code === fresh.code));
+
+  // The host removes someone from the lobby.
+  const players = await room("colorMatch", 3);
+  const [ann, bob, cat] = players;
+  bob.send({ type: "kick", seat: cat.seat });
+  const refused = await bob.waitFor((m) => m.type === "error");
+  check("Only the host can remove a player", refused.error === "notAllowed");
+  ann.send({ type: "kick", seat: cat.seat });
+  const roster = await ann.waitFor((m) => m.type === "roster" && m.players.length === 2);
+  await sleep(300);
+  check("The host removes a player: their seat is gone and their socket closes as removed", roster.players.every((p) => p.seat !== cat.seat) && cat.closed === 4001, `close code ${cat.closed}`);
+  const back = await new Player(cat, "Cat").connect().then(() => "connected", (e) => e.message);
+  check("A removed seat can't reconnect", back === "HTTP 410", back);
+  ann.send({ type: "start" });
+  await Promise.all([ann, bob].map((p) => p.seen(0)));
+  players.forEach((p) => p.ws.readyState === 1 && p.close());
+  // Leave the open game Quick Play created, so tests never leave games in the real list.
+  const host = await new Player(fresh, "Cat").connect();
+  host.send({ type: "leave" });
+  await sleep(500);
+  list = await listed("ticTacToe");
+  check("When its host leaves an open lobby, it drops off the list", !list.some((l) => l.code === fresh.code));
+}
+
 /** Slow (80 s): a phone that goes silent without closing shows as away; one that pings doesn't. */
 async function presence() {
   const [silent, pinger] = await room("ticTacToe", 2);
@@ -265,7 +305,7 @@ async function presence() {
 
 const phase = process.argv[2] ?? "all";
 try {
-  if (phase === "all") { await basics(); await lobbyHandover(); await turnIndependent(); await hiddenCards(); }
+  if (phase === "all") { await basics(); await lobbyHandover(); await turnIndependent(); await hiddenCards(); await openGames(); }
   if (phase === "restart1") await restart1();
   if (phase === "restart2") await restart2();
   if (phase === "presence") await presence();

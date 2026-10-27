@@ -9,14 +9,25 @@ final class FakeCloudService: CloudGameService {
     var createResult: Result<CloudSeat, CloudError> = .success(CloudSeat(code: "ABCD1234", seat: "seat0", token: "t0", game: .ticTacToe, maxSeats: 2))
     var joinResult: Result<CloudSeat, CloudError> = .success(CloudSeat(code: "ABCD1234", seat: "seat1", token: "t1", game: .ticTacToe, maxSeats: 2))
     private(set) var created: [GameType] = []
+    private(set) var createdOpen: [Bool] = []
     private(set) var joinedCodes: [String] = []
+    private(set) var quickPlays: [(GameType, [String])] = []
+    var listed: [OpenGame] = []
     private(set) var connections: [FakeRoomConnection] = []
 
     func checkHealth() async -> Bool { online }
 
-    func createRoom(_ game: GameType, nickname: String) async throws(CloudError) -> CloudSeat {
+    func createRoom(_ game: GameType, nickname: String, open: Bool) async throws(CloudError) -> CloudSeat {
         created.append(game)
+        createdOpen.append(open)
         return try createResult.get()
+    }
+
+    func openGames() async -> [OpenGame]? { listed }
+
+    func quickPlay(_ game: GameType, nickname: String, avoid: [String]) async throws(CloudError) -> CloudSeat {
+        quickPlays.append((game, avoid))
+        return try joinResult.get()
     }
 
     func joinRoom(code: String, nickname: String) async throws(CloudError) -> CloudSeat {
@@ -49,6 +60,7 @@ final class FakeRoomConnection: CloudRoomConnection {
     func drop() { isConnected = false; onEvent(.disconnected) }
     func deliver(_ message: CloudServerMessage) { onEvent(.message(message)) }
     func gone() { onEvent(.roomGone) }
+    func removed() { onEvent(.removed) }
 
     var moves: [MoveRequestPayload] {
         sent.compactMap { if case .move(let request) = $0 { request } else { nil } }
@@ -351,5 +363,62 @@ struct OnlineGamesTests {
         #expect((try? EnvelopeCodec.validate(envelope(nil))) != nil)
         #expect((try? EnvelopeCodec.validate(envelope("abcd1234"))) == nil)
         #expect((try? EnvelopeCodec.validate(envelope("ABC"))) == nil)
+    }
+
+    @Test("Hosting is open by default and private on request")
+    func openByDefault() async {
+        let s = Setup()
+        s.games.hostLobby(.ticTacToe)
+        await settle { s.games.lobby != nil }
+        s.games.leave()
+        s.games.hostLobby(.ticTacToe, open: false)
+        await settle { s.games.lobby != nil }
+        #expect(s.cloud.createdOpen == [true, false])
+        s.store.clear()
+    }
+
+    @Test("Quick Play online asks the service for a seat, avoiding games the player was removed from")
+    func quickPlayOnline() async throws {
+        let s = Setup()
+        s.games.joinOnline(code: "ABCD1234")
+        await settle { s.games.lobby != nil }
+        let connection = try #require(s.cloud.connections.first)
+        connection.removed()
+        #expect(s.games.lobby?.phase == .ended("The host removed you from this game."))
+        #expect(s.games.removedFromCodes == ["ABCD1234"])
+        #expect(s.store.load() == nil)
+        s.games.dismissEndedMatch()
+        s.games.quickPlay(.ticTacToe)
+        await settle { s.games.lobby != nil }
+        #expect(s.cloud.quickPlays.first?.0 == .ticTacToe)
+        #expect(s.cloud.quickPlays.first?.1 == ["ABCD1234"])
+        s.store.clear()
+    }
+
+    @Test("The online host's Remove sends a kick for that seat")
+    func onlineRemove() async throws {
+        let s = Setup()
+        s.games.hostLobby(.ticTacToe)
+        await settle { s.games.lobby != nil }
+        let connection = try #require(s.cloud.connections.first)
+        connection.connect()
+        connection.deliver(Self.roster())
+        s.games.removePlayer("seat1")
+        #expect(connection.sent.contains(.kick(seat: "seat1")))
+        s.store.clear()
+    }
+
+    @Test("Open games list: other titles, full games and removed games are left out; names are filtered")
+    func openGamesFilter() async {
+        let cloud = FakeCloudService()
+        cloud.listed = [
+            OpenGame(code: "AAAA1111", game: .ticTacToe, host: "Ann", seats: 1, maxSeats: 2),
+            OpenGame(code: "BBBB2222", game: .chess, host: "Bob", seats: 1, maxSeats: 2),
+            OpenGame(code: "CCCC3333", game: .ticTacToe, host: "Cat", seats: 2, maxSeats: 2),
+            OpenGame(code: "DDDD4444", game: .ticTacToe, host: "Dan", seats: 1, maxSeats: 2),
+        ]
+        let list = OpenGamesList(service: cloud)
+        await list.refresh()
+        #expect(list.games(for: .ticTacToe, excluding: ["DDDD4444"]).map(\.code) == ["AAAA1111"])
     }
 }

@@ -46,6 +46,9 @@ final class GameCoordinator {
         var seats: [String] = []
         /// Set when the online game service hosts this game: the invite code.
         var cloudCode: String? = nil
+        /// Open: anyone can see and join it (online, in the service's list; offline, everyone
+        /// nearby). Private: online only by code, offline only by direct invitation.
+        var isOpen = true
 
         var isOnline: Bool { cloudCode != nil }
 
@@ -101,6 +104,10 @@ final class GameCoordinator {
     @ObservationIgnored private var cloudConnection: (any CloudRoomConnection)?
     /// A move sent but not yet answered; re-sent with the same id after a reconnect.
     @ObservationIgnored private var pendingCloudMove: MoveRequestPayload?
+    /// Online games this player was removed from: not shown again, and Quick Play avoids them.
+    private(set) var removedFromCodes: Set<String> = []
+    /// Players the host removed from this phone-hosted lobby; they can't rejoin it.
+    @ObservationIgnored private var removedIds: Set<String> = []
 
     // Host-only authoritative state.
     @ObservationIgnored private var authoritative: GameEngine.State?
@@ -194,22 +201,23 @@ final class GameCoordinator {
     // MARK: - Local actions
 
     /// Hosts online when the internet is reachable, and on this phone otherwise.
-    func hostLobby(_ gameType: GameType) {
+    /// `open` (the default): anyone can see and join. Otherwise it's private.
+    func hostLobby(_ gameType: GameType, open: Bool = true) {
         guard lobby == nil, joiningLobbyId == nil, !isConnectingOnline else {
             notice = "Finish or leave your current game first."
             return
         }
         guard gameType.isPlayable else { return }
-        guard let cloud else { return hostOnThisPhone(gameType) }
+        guard let cloud else { return hostOnThisPhone(gameType, open: open) }
         isConnectingOnline = true
         Task {
             defer { isConnectingOnline = false }
-            guard await onlineAvailable() else { return hostOnThisPhone(gameType) }
+            guard await onlineAvailable() else { return hostOnThisPhone(gameType, open: open) }
             do throws(CloudError) {
-                enterCloudRoom(try await cloud.createRoom(gameType, nickname: session.localIdentity.nickname))
+                enterCloudRoom(try await cloud.createRoom(gameType, nickname: session.localIdentity.nickname, open: open))
             } catch {
                 // The service is unreachable after all: play on this phone rather than not at all.
-                hostOnThisPhone(gameType)
+                hostOnThisPhone(gameType, open: open)
                 notice = "Couldn't reach the online game service, so this game is hosted on your phone. Players need to be connected nearby."
             }
         }
@@ -233,7 +241,52 @@ final class GameCoordinator {
         }
     }
 
-    private func hostOnThisPhone(_ gameType: GameType) {
+    /// Puts the player in a game as fast as possible: online, the open game that's waited
+    /// longest (or a new open one); offline, an open game nearby (or a new open one).
+    func quickPlay(_ gameType: GameType) {
+        guard lobby == nil, joiningLobbyId == nil, !isConnectingOnline else {
+            notice = "Finish or leave your current game first."
+            return
+        }
+        let nearby = { [weak self] in
+            guard let self else { return }
+            if let offer = self.offers(for: gameType).first(where: { !$0.isFull && $0.payload.cloudCode == nil }) {
+                self.join(offer)
+            } else {
+                self.hostOnThisPhone(gameType, open: true)
+            }
+        }
+        guard let cloud else { return nearby() }
+        isConnectingOnline = true
+        Task {
+            defer { isConnectingOnline = false }
+            guard await onlineAvailable() else { return nearby() }
+            do throws(CloudError) {
+                enterCloudRoom(try await cloud.quickPlay(gameType, nickname: session.localIdentity.nickname, avoid: Array(removedFromCodes)))
+            } catch {
+                notice = error.message
+            }
+        }
+    }
+
+    /// The host removes someone from the lobby before the game starts. They can't rejoin it.
+    func removePlayer(_ playerId: String) {
+        guard isHost, var lobby, lobby.phase == .lobby, playerId != localId, lobby.player(playerId) != nil else { return }
+        if lobby.isOnline {
+            cloudConnection?.send(.kick(seat: playerId))
+            return
+        }
+        lobby.players.removeAll { $0.id == playerId }
+        removedIds.insert(playerId)
+        self.lobby = lobby
+        broadcastRoster()
+        // The removed player gets a roster without them, which their phone reads as "removed".
+        let roster = LobbyRosterPayload(lobbyId: lobby.id, gameType: lobby.gameType, maxSeats: lobby.maxSeats, players: lobby.players)
+        session.send(.joinAccept(roster), sessionId: lobby.id, to: [playerId])
+        broadcastOffer()
+    }
+
+    private func hostOnThisPhone(_ gameType: GameType, open: Bool = true) {
         guard lobby == nil else { return }
         let me = session.localIdentity
         lobby = Lobby(
@@ -241,7 +294,8 @@ final class GameCoordinator {
             gameType: gameType,
             hostId: me.id,
             maxSeats: gameType.maxPlayers,
-            players: [LobbyPlayer(id: me.id, nickname: me.nickname, isReady: true, isHost: true)]
+            players: [LobbyPlayer(id: me.id, nickname: me.nickname, isReady: true, isHost: true)],
+            isOpen: open
         )
         invitedIds = []
         broadcastOffer()
@@ -468,6 +522,11 @@ final class GameCoordinator {
     private func hostReceiveJoin(_ ref: LobbyRefPayload, from identity: PeerIdentity) {
         // Online games are joined through the service; an older app asking here can't join.
         guard isHost, var lobby, lobby.id == ref.lobbyId, !lobby.isOnline else {
+            session.send(.joinReject(JoinRejectPayload(lobbyId: ref.lobbyId, reason: .notFound)), sessionId: ref.lobbyId, to: [identity.id])
+            return
+        }
+        // Someone the host removed can't come back to this lobby.
+        if removedIds.contains(identity.id) {
             session.send(.joinReject(JoinRejectPayload(lobbyId: ref.lobbyId, reason: .notFound)), sessionId: ref.lobbyId, to: [identity.id])
             return
         }
@@ -752,8 +811,11 @@ final class GameCoordinator {
             }
         }
         // Let newly connected peers see an open lobby, and repeat an invitation sent while they were away.
-        guard let lobby, isHost, lobby.phase == .lobby, !lobby.isFull, lobby.player(identity.id) == nil else { return }
+        guard let lobby, isHost, lobby.phase == .lobby, !lobby.isFull, lobby.player(identity.id) == nil,
+              !removedIds.contains(identity.id) else { return }
         let invited = invitedIds.contains(identity.id) ? identity.id : nil
+        // A private lobby is only offered to people who were invited.
+        guard lobby.isOpen || invited != nil else { return }
         session.send(.lobbyOffer(offerPayload(for: lobby, invitedPlayerId: invited)), sessionId: lobby.id, to: [identity.id])
     }
 
@@ -904,8 +966,8 @@ final class GameCoordinator {
 
     /// Advertises the lobby to every connected peer who isn't already in it.
     private func broadcastOffer() {
-        guard let lobby, isHost, lobby.phase == .lobby else { return }
-        let outsiders = session.nearbyPlayers.map(\.id).filter { lobby.player($0) == nil }
+        guard let lobby, isHost, lobby.phase == .lobby, lobby.isOpen else { return }
+        let outsiders = session.nearbyPlayers.map(\.id).filter { lobby.player($0) == nil && !removedIds.contains($0) }
         guard !outsiders.isEmpty else { return }
         session.send(.lobbyOffer(offerPayload(for: lobby, invitedPlayerId: nil)), sessionId: lobby.id, to: outsiders)
     }
@@ -942,6 +1004,7 @@ final class GameCoordinator {
         nudgeRetry = nil
         relayedMoveDelivered = false
         turnRevision = 0
+        removedIds = []
     }
 
     // MARK: - Online
@@ -1016,6 +1079,17 @@ final class GameCoordinator {
             if let pendingCloudMove { cloudConnection?.send(.move(pendingCloudMove)) }
         case .disconnected:
             isCloudConnected = false
+        case .removed:
+            if let code = lobby?.cloudCode { removedFromCodes.insert(code) }
+            isCloudConnected = false
+            cloudStore?.clear()
+            cloudConnection = nil
+            pendingMoveId = nil
+            pendingCloudMove = nil
+            if var lobby {
+                lobby.phase = .ended("The host removed you from this game.")
+                self.lobby = lobby
+            }
         case .roomGone:
             isCloudConnected = false
             cloudStore?.clear()
@@ -1052,6 +1126,7 @@ final class GameCoordinator {
         guard var lobby, lobby.cloudCode == roster.code, roster.you == localId else { return }
         let wasLobby = lobby.phase == .lobby, wasHost = isHost
         lobby.hostId = roster.organizer
+        lobby.isOpen = roster.open ?? false
         // Names from the server get the same cleaning and filtering as names seen nearby.
         lobby.players = roster.players.map { player in
             let nickname = player.seat == localId

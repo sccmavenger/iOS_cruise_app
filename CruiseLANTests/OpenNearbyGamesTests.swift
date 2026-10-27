@@ -70,4 +70,35 @@ struct OpenNearbyGamesTests {
         #expect(guest.games.offers(for: .ticTacToe).isEmpty)
         #expect(!guest.session.nearbyPlayers.contains { $0.id == host.id })
     }
+
+    @Test("A private game isn't shown to people nearby unless they're invited")
+    func privateNearby() throws {
+        host.games.hostLobby(.ticTacToe, open: false)
+        #expect(guest.games.offers(for: .ticTacToe).isEmpty)
+        host.games.invite(try #require(host.session.player(for: guest.id)))
+        #expect(guest.games.invitation?.host.id == host.id)
+    }
+
+    @Test("The host removes a nearby player; they're told and can't rejoin")
+    func removeNearby() throws {
+        host.games.hostLobby(.ticTacToe)
+        let offer = try #require(guest.games.offers(for: .ticTacToe).first)
+        guest.games.join(offer)
+        #expect(host.games.lobby?.players.count == 2)
+        host.games.removePlayer(guest.id)
+        #expect(host.games.lobby?.players.count == 1)
+        #expect(guest.games.lobby == nil)
+        #expect(guest.games.notice == "You were removed from the lobby.")
+        guest.games.join(offer)
+        #expect(host.games.lobby?.players.count == 1, "removed players can't come back")
+    }
+
+    @Test("Quick Play nearby joins an open game, or hosts one if there's none")
+    func quickPlayNearby() {
+        guest.games.quickPlay(.connectFour)
+        #expect(guest.games.lobby?.hostId == guest.id, "nothing to join: hosts an open game")
+        #expect(host.games.offers(for: .connectFour).count == 1)
+        host.games.quickPlay(.connectFour)
+        #expect(host.games.lobby?.hostId == guest.id, "joins the open one")
+    }
 }
