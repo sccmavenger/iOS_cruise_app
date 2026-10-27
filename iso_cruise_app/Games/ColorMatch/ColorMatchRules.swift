@@ -1,5 +1,3 @@
-import Foundation
-
 /// Pure Color Match rules. Only the host calls these; clients see projections.
 ///
 /// Implements 03-GAME-RULES.md: 108-card deck, 7-card deal, numbered start card,
@@ -39,7 +37,7 @@ nonisolated enum ColorMatchRules {
     }
 
     static func newMatch(players: [String], using rng: inout some RandomNumberGenerator) -> ColorMatchState {
-        newRound(players: players, scores: Dictionary(uniqueKeysWithValues: players.map { ($0, 0) }), round: 1, deck: fullDeck().shuffled(using: &rng), using: &rng)
+        newRound(players: players, scores: Dictionary(uniqueKeysWithValues: players.map { ($0, 0) }), round: 1, deck: fullDeck().portableShuffled(using: &rng), using: &rng)
     }
 
     /// Deals a round from an already-ordered deck. The starting player rotates each round.
@@ -63,7 +61,7 @@ nonisolated enum ColorMatchRules {
         var start = pile.removeLast()
         while !isNumber(start) {
             pile.append(start)
-            pile.shuffle(using: &rng)
+            pile.portableShuffle(using: &rng)
             start = pile.removeLast()
         }
 
@@ -92,7 +90,7 @@ nonisolated enum ColorMatchRules {
         if state.matchWinner != nil {
             return newMatch(players: state.players, using: &rng)
         }
-        return newRound(players: state.players, scores: state.scores, round: state.round + 1, deck: fullDeck().shuffled(using: &rng), using: &rng)
+        return newRound(players: state.players, scores: state.scores, round: state.round + 1, deck: fullDeck().portableShuffled(using: &rng), using: &rng)
     }
 
     static func isNumber(_ card: Card) -> Bool {
@@ -319,7 +317,7 @@ nonisolated enum ColorMatchRules {
             if state.drawPile.isEmpty {
                 guard state.discardPile.count > 1 else { break }
                 let top = state.discardPile.removeLast()
-                state.drawPile = state.discardPile.shuffled(using: &rng)
+                state.drawPile = state.discardPile.portableShuffled(using: &rng)
                 state.discardPile = [top]
             }
             guard let card = state.drawPile.popLast() else { break }

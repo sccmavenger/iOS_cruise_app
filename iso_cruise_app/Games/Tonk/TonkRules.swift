@@ -1,5 +1,3 @@
-import Foundation
-
 /// Tonk (Tunk): a fast rummy for two to four, played to a points target.
 ///
 /// **On which Tonk.** Tonk is a folk game and its rules vary by region — hand size, whether
@@ -55,7 +53,7 @@ nonisolated enum TonkRules {
 
     private static func deal(_ state: inout TonkState, using rng: inout some RandomNumberGenerator) {
         var deck = PlayingCard.freshDeck
-        deck.shuffle(using: &rng)
+        deck.portableShuffle(using: &rng)
         for (offset, player) in state.players.enumerated() {
             state.hands[player] = Array(deck[(offset * handSize)..<((offset + 1) * handSize)])
         }
@@ -128,7 +126,7 @@ nonisolated enum TonkRules {
                 return next
             }
             let top = next.discard.removeLast()
-            next.stock = next.discard.shuffled(using: &rng)
+            next.stock = next.discard.portableShuffled(using: &rng)
             next.discard = [top]
         }
         let card = next.stock.removeLast()

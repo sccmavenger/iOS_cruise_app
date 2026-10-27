@@ -1,5 +1,3 @@
-import Foundation
-
 /// An action a player asks the host to perform. Clients never apply these locally;
 /// the host validates them against the authoritative state.
 nonisolated enum GameMove: Codable, Equatable, Sendable {

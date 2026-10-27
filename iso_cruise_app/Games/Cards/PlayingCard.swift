@@ -1,5 +1,3 @@
-import Foundation
-
 /// A card from a standard 52-card deck, shared by every card game in CruiseLAN.
 ///
 /// Color Match has its own `Card` type because it isn't a standard deck (four colours,
@@ -103,11 +101,11 @@ nonisolated struct PlayingCard: Codable, Equatable, Hashable, Sendable, Identifi
 extension Array where Element == PlayingCard {
     /// Sorted for display: grouped by suit, high rank first within a suit. Keeping this in
     /// one place means a hand looks the same in every game.
-    var sortedForDisplay: [PlayingCard] {
+    nonisolated var sortedForDisplay: [PlayingCard] {
         sorted { ($0.suit.rawValue, -$0.rank) < ($1.suit.rawValue, -$1.rank) }
     }
 
-    var countingValue: Int {
+    nonisolated var countingValue: Int {
         reduce(0) { $0 + $1.countingValue }
     }
 }

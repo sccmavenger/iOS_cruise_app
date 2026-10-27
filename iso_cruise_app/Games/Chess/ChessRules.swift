@@ -1,5 +1,3 @@
-import Foundation
-
 nonisolated struct ChessPiece: Codable, Equatable, Hashable, Sendable {
     enum Color: String, Codable, Sendable {
         case white, black
@@ -15,7 +13,7 @@ nonisolated struct ChessPiece: Codable, Equatable, Hashable, Sendable {
 
         static let promotions: [Kind] = [.queen, .rook, .bishop, .knight]
 
-        var name: String { rawValue.capitalized }
+        var name: String { rawValue.capitalizedWord }
     }
 
     var color: Color

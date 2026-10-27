@@ -1,5 +1,3 @@
-import Foundation
-
 // Color Match: CruiseLAN's original take on classic shedding-card rules
 // (see 03-GAME-RULES.md). Original name, symbols, and art.
 
@@ -7,7 +5,7 @@ nonisolated enum CardColor: String, Codable, Sendable, CaseIterable, Identifiabl
     case red, yellow, green, blue
 
     var id: String { rawValue }
-    var name: String { rawValue.capitalized }
+    var name: String { rawValue.capitalizedWord }
 }
 
 nonisolated enum CardFace: Codable, Equatable, Hashable, Sendable {
@@ -154,3 +152,8 @@ nonisolated struct ColorMatchSnapshot: Codable, Equatable, Sendable {
             && round >= 1
     }
 }
+
+/// Storage only: the cloud game server saves the full table between moves. It still never goes
+/// on the wire; players only ever receive `ColorMatchSnapshot`.
+extension ColorMatchState: Codable {}
+extension ColorMatchState.PendingDrawFour: Codable {}

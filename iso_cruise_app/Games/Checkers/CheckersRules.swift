@@ -1,5 +1,3 @@
-import Foundation
-
 /// What a checkers player asks the host to do. A multi-jump is sent one hop at a time.
 nonisolated enum CheckersAction: Codable, Equatable, Sendable {
     case move(from: Int, to: Int)

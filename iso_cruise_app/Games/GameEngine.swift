@@ -1,5 +1,3 @@
-import Foundation
-
 /// Dispatches generic game operations to each title's pure rules.
 /// Only the host calls the mutating entry points.
 nonisolated enum GameEngine {
@@ -48,6 +46,11 @@ nonisolated enum GameEngine {
 
     static func apply(_ move: GameMove, by playerId: String, to state: State) throws(MoveError) -> State {
         var rng = SystemRandomNumberGenerator()
+        return try apply(move, by: playerId, to: state, using: &rng)
+    }
+
+    /// The cloud server passes its own generator; tests pass a seeded one.
+    static func apply(_ move: GameMove, by playerId: String, to state: State, using rng: inout some RandomNumberGenerator) throws(MoveError) -> State {
         switch (state, move) {
         case (.ticTacToe(let board), .ticTacToe(let cell)):
             return .ticTacToe(try TicTacToeRules.apply(cell: cell, by: playerId, to: board))
@@ -71,6 +74,10 @@ nonisolated enum GameEngine {
     /// Rematch (board games) or next round / new match (Color Match).
     static func rematch(from state: State) -> State {
         var rng = SystemRandomNumberGenerator()
+        return rematch(from: state, using: &rng)
+    }
+
+    static func rematch(from state: State, using rng: inout some RandomNumberGenerator) -> State {
         switch state {
         case .ticTacToe(let board): return .ticTacToe(TicTacToeRules.rematch(from: board))
         case .connectFour(let board): return .connectFour(ConnectFourRules.rematch(from: board))
@@ -106,6 +113,10 @@ nonisolated enum GameEngine {
         }
     }
 }
+
+/// Storage only: the cloud game server saves the full state between moves. It is never sent to
+/// players; they receive `projection(of:for:)`.
+extension GameEngine.State: Codable {}
 
 extension GameType {
     /// Titles that are fully implemented in this build.

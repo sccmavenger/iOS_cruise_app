@@ -1,5 +1,3 @@
-import Foundation
-
 /// What a player can ask the host to do in Tonk.
 nonisolated enum TonkAction: Codable, Equatable, Sendable {
     case drawFromStock
@@ -138,3 +136,7 @@ nonisolated struct TonkSnapshot: Codable, Equatable, Sendable {
             && lastEvent.count <= 200
     }
 }
+
+/// Storage only: the cloud game server saves the full table between moves. Players only ever
+/// receive `TonkSnapshot`.
+extension TonkState: Codable {}

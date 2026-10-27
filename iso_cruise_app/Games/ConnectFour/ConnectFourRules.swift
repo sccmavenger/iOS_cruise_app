@@ -1,5 +1,3 @@
-import Foundation
-
 nonisolated struct ConnectFourState: Codable, Equatable, Sendable {
     enum Disc: String, Codable, Sendable {
         case red, yellow

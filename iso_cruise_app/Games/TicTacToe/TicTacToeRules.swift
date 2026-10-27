@@ -1,5 +1,3 @@
-import Foundation
-
 nonisolated struct TicTacToeState: Codable, Equatable, Sendable {
     enum Mark: String, Codable, Sendable {
         case x, o

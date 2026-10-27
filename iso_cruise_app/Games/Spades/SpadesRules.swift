@@ -1,5 +1,3 @@
-import Foundation
-
 /// Spades: four players in two fixed partnerships, bidding and trick-taking.
 ///
 /// Seats 0 and 2 are one team, seats 1 and 3 the other, so partners sit opposite — the
@@ -52,7 +50,7 @@ nonisolated enum SpadesRules {
     /// Deals a fresh hand and resets everything round-scoped. Scores and bags carry over.
     private static func deal(_ state: inout SpadesState, using rng: inout some RandomNumberGenerator) {
         var deck = PlayingCard.freshDeck
-        deck.shuffle(using: &rng)
+        deck.portableShuffle(using: &rng)
         for (offset, player) in state.players.enumerated() {
             state.hands[player] = Array(deck[(offset * handSize)..<((offset + 1) * handSize)])
         }
