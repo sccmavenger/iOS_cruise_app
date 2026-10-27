@@ -3,6 +3,7 @@
   "main": "src/index.js",
   "compatibility_date": "2026-10-01",
   "durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "Room" }] },
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }],
   "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }]
 }

@@ -20,3 +20,13 @@ The script does the following:
 
 The copied rules files, `rules.wasm`, `node_modules` and `.wrangler` are generated and
 gitignored. Nothing here is part of the app target.
+
+Against the deployed test Worker (`npx wrangler deploy` from `worker/`):
+
+```bash
+cd spikes/cloudflare-online/worker
+BASE=https://cruiselan-online-spike.dguilloryjr.workers.dev node scenarios.mjs all
+BASE=https://cruiselan-online-spike.dguilloryjr.workers.dev node deploytest.mjs        # hibernation + deploy mid-game
+BASE=https://cruiselan-online-spike.dguilloryjr.workers.dev node deploy-survival.mjs active
+npx wrangler delete    # remove the test Worker when finished
+```

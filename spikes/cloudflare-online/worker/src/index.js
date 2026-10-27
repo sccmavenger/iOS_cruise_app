@@ -2,9 +2,14 @@
 import { DurableObject } from "cloudflare:workers";
 import rulesModule from "./rules.wasm";
 import { createRules } from "./rules.js";
+import { TEST_PAGE } from "./page.js";
 
 // One rules instance per isolate, created on first use, so cold-start cost is measurable.
 let rules = null, rulesInitMs = null;
+// Identifies this isolate, so tests can tell a fresh start (cold or after a deploy) from a warm one.
+// Created on first use: Workers don't allow random values at module load.
+let isolateId = null;
+const getIsolateId = () => (isolateId ??= crypto.randomUUID());
 function getRules() {
   if (!rules) { const t = performance.now(); rules = createRules(rulesModule); rulesInitMs = performance.now() - t; }
   return rules;
@@ -23,6 +28,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter(Boolean); // rooms/:code/(join|socket)
+    if (request.method === "GET" && url.pathname === "/") return new Response(TEST_PAGE, { headers: { "content-type": "text/html; charset=utf-8" } });
     if (request.method === "POST" && url.pathname === "/rooms") {
       const { game, nickname, seats } = await request.json();
       if (!MAX_SEATS[game]) return json({ error: "unknownGame" }, 400);
@@ -33,7 +39,7 @@ export default {
     if (parts[0] === "rooms" && parts[1] && /^[0-9A-Z]{8}$/.test(parts[1])) {
       const stub = env.ROOMS.get(env.ROOMS.idFromName(parts[1]));
       if (parts[2] === "join" && request.method === "POST") return stub.fetch("https://room/join", { method: "POST", body: await request.text() });
-      if (parts[2] === "socket") return stub.fetch(new Request("https://room/socket", request));
+      if (parts[2] === "socket") return stub.fetch(new Request("https://room/socket" + url.search, request));
     }
     return json({ error: "notFound" }, 404);
   },
@@ -43,6 +49,8 @@ export class Room extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
+    // A new id each time the object is constructed: after hibernation, eviction or a deploy.
+    this.instanceId = crypto.randomUUID();
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS room (id INTEGER PRIMARY KEY CHECK (id = 1), code TEXT, game TEXT, phase TEXT, max_seats INTEGER, created_at INTEGER, updated_at INTEGER);
       CREATE TABLE IF NOT EXISTS seats (seat TEXT PRIMARY KEY, idx INTEGER, nickname TEXT, token_hash TEXT UNIQUE);
@@ -83,7 +91,8 @@ export class Room extends DurableObject {
     }
     if (url.pathname === "/socket") {
       if (request.headers.get("Upgrade") !== "websocket") return json({ error: "expectedWebSocket" }, 426);
-      const token = (request.headers.get("Authorization") ?? "").replace(/^Bearer /, "");
+      // Apps send the token as a header. Browsers can't, so the spike's test page uses ?token=.
+      const token = (request.headers.get("Authorization") ?? "").replace(/^Bearer /, "") || url.searchParams.get("token") || "";
       const row = this.sql.exec("SELECT seat FROM seats WHERE token_hash = ?", await sha256(token)).toArray()[0];
       if (!row) return json({ error: "badToken" }, 401);
       const pair = new WebSocketPair();
@@ -118,7 +127,8 @@ export class Room extends DurableObject {
     let msg;
     try { msg = JSON.parse(message); } catch { return ws.send(JSON.stringify({ type: "error", error: "badJSON" })); }
     if (msg.type === "resume") return this.sendCurrent(ws, seat);
-    if (msg.type === "stats") return ws.send(JSON.stringify({ type: "stats", rulesInitMs, isolateHasRules: rules !== null }));
+    if (msg.type === "stats") return ws.send(JSON.stringify({ type: "stats", rulesInitMs, isolateHasRules: rules !== null, isolateId: getIsolateId(), version: this.env.CF_VERSION_METADATA?.id, instanceId: this.instanceId, sockets: this.ctx.getWebSockets().length }));
+    if (msg.type === "ping") return ws.send(JSON.stringify({ type: "pong", t: msg.t }));
     if (msg.type === "move") return this.handleMove(ws, seat, msg);
     ws.send(JSON.stringify({ type: "error", error: "unknownType" }));
   }
