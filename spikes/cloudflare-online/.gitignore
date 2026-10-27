@@ -1,0 +1,11 @@
+swift/Sources/CruiseGameRules/*Rules.swift
+swift/Sources/CruiseGameRules/*Model.swift
+swift/Sources/CruiseGameRules/GameEngine.swift
+swift/Sources/CruiseGameRules/GameProtocol.swift
+swift/Sources/CruiseGameRules/GameType.swift
+swift/Sources/CruiseGameRules/PlayingCard.swift
+swift/.build/
+worker/node_modules/
+worker/.wrangler/
+worker/src/rules.wasm
+golden.jsonl

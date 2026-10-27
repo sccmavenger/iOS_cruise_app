@@ -1,0 +1,9 @@
+{
+  "name": "cruiselan-online-spike",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "wrangler": "^4.153.0",
+    "ws": "^8.22.0"
+  }
+}
