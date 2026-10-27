@@ -3,6 +3,59 @@
 Status: investigation and plan only. Nothing has been migrated, deployed or purchased, and the
 app's behavior is unchanged. Date checked: 2026-10-27.
 
+## 0. Decision (2026-10-27): Cloudflare Workers and Durable Objects
+
+The owner chose **option B, Cloudflare**, over the Fly.io recommendation below. The analysis
+below is kept as the record of the trade-off. What the decision changes:
+
+- **Hosting.** Each room is one Durable Object, created from the room's name. A small Worker in
+  front of it handles room creation, joining and rate limits. Cloudflare's one-instance-per-name,
+  single-threaded objects replace the Fly design of a room actor plus a compare-and-swap on the
+  revision.
+
+- **Rules on the server.** First, spike compiling `CruiseGameRules` to WebAssembly with the
+  swift.org Wasm SDK and calling it from the Durable Object (§8). Only if that fails or is too
+  slow or too large, port the rules to TypeScript. In that case, add golden tests: the Swift
+  package generates move sequences with their expected projections, and the TypeScript port must
+  reproduce them exactly. Either way, Phase 0 (extracting the package) still comes first.
+
+- **Storage: no separate database.** Each Durable Object has its own built-in SQLite storage, and
+  that is the only persistent store. There's no D1, Postgres, or KV.
+
+  **Why it's still needed.** A Durable Object's memory isn't durable:
+  - it's wiped when the object hibernates or is evicted;
+  - every deploy restarts every object and drops every WebSocket.
+
+  Without storage, every live game, including the hidden hands that exist only on the server,
+  would be lost at the next deploy.
+
+  **What's in each room's storage**, and nothing else:
+
+  | Table | Contents | Why |
+  | --- | --- | --- |
+  | `room` (one row) | Game type, phase (lobby, playing, finished), organizer seat, creation time, last-move time, expiry time | Rebuild the room after a restart; expiry |
+  | `seats` | Seat index, nickname (filtered), SHA-256 hash of the seat token, ready flag, rematch vote | Admission and reconnects without accounts; the raw token is never stored |
+  | `state` (one row) | The full authoritative `GameEngine.State` as JSON, `revision`, `turnRevision` | The game itself, hidden hands and deck order included. Written in the same transaction as the move |
+  | `moves` | `moveId` (unique), seat, revision, move, outcome (accepted or the rejection reason) | Exactly-once: a retried move gets its original answer. Also auditing and debugging |
+  | `push` (Phase 4) | One APNs token per seat, if the player allows notifications | "Your turn" alerts while the app is closed |
+
+  - **Size:** about 1–10 KB of state per room, plus about 300 B per move.
+  - **Retention:** a Durable Object alarm deletes everything 24 h after an unused lobby was
+    created, 7 days after the last move in an abandoned game, or 30 days after a game finishes.
+
+- **No global lookup table.** The invite code itself names the room's Durable Object
+  (`idFromName(code)`), so no directory has to map codes to rooms.
+  - The code is 8 characters of Crockford base32, about 40 bits.
+  - Guessing is stopped by the Worker's per-IP rate limits, and an expired room refuses joins.
+  - Codes can't be rotated in v1, which is acceptable.
+
+- **What stays separate.** The existing telemetry Worker (`server/telemetry-worker`) keeps its own
+  D1 database. Game data never goes into it.
+
+- **Cost.** The $5/mo Workers Paid minimum covers the pilot and 100 concurrent players, and an
+  estimated ~$7/mo covers 1,000 (§6.3). The main risk is objects that never hibernate. Use the
+  Hibernation WebSocket API and alarms, never `setTimeout`.
+
 ## 1. Executive recommendation
 
 **Move the seven games' rules into a shared Swift package, `CruiseGameRules`, and run an
