@@ -48,6 +48,8 @@ Behavior:
 
 ## Abuse limits
 
+What was attacked and how: `docs/architecture/SECURITY-TESTING-2026-10.md`.
+
 - Per address: 60 room creates and 120 joins a minute; 240 invite-page or room-info lookups.
 - Per socket: 40 messages in 10 s, or it's closed (the app reconnects). At most 2 sockets per seat.
 - Lobby seats whose player never connects are freed after 90 s, so open games can't be squatted.
