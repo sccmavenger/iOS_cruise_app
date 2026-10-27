@@ -15,6 +15,7 @@ import Observation
 @Observable
 final class ConnectionSettings {
     private static let nearbyRadioKey = "transport.nearbyRadioEnabled"
+    private static let onlineGamesKey = "games.onlineEnabled"
 
     var nearbyRadioEnabled: Bool {
         didSet {
@@ -22,6 +23,12 @@ final class ConnectionSettings {
             defaults.set(nearbyRadioEnabled, forKey: Self.nearbyRadioKey)
             apply?(nearbyRadioEnabled)
         }
+    }
+
+    /// Host games on the online service when the internet is reachable (on by default). Off means
+    /// every game is hosted on a phone, as in version 1, which is handy for testing offline play.
+    var onlineGamesEnabled: Bool {
+        didSet { defaults.set(onlineGamesEnabled, forKey: Self.onlineGamesKey) }
     }
 
     /// Applies a change (switches the transport and restarts links). Installed by the app.
@@ -32,5 +39,6 @@ final class ConnectionSettings {
         self.defaults = defaults
         // `bool(forKey:)` also understands "NO"/"0" strings (launch arguments, MDM); unset means on.
         nearbyRadioEnabled = defaults.object(forKey: Self.nearbyRadioKey) == nil ? true : defaults.bool(forKey: Self.nearbyRadioKey)
+        onlineGamesEnabled = defaults.object(forKey: Self.onlineGamesKey) == nil ? true : defaults.bool(forKey: Self.onlineGamesKey)
     }
 }

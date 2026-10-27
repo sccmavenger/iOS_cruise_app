@@ -7,6 +7,7 @@ struct ProfileView: View {
     @Environment(ProfileStore.self) private var profile
     @Environment(SessionManager.self) private var session
     @Environment(ConnectionSettings.self) private var connectionSettings
+    @Environment(OnlineStatus.self) private var online
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var notificationsAllowed: Bool?
@@ -55,6 +56,22 @@ struct ProfileView: View {
                     Text(connectionSettings.nearbyRadioEnabled
                          ? "CruiseLAN uses both. Nearby radio connects phones a few steps apart with no shared network. The Wi-Fi network reaches across a building, but only between phones joined to the same Wi-Fi, and some hotel and ship networks block it. Turn Nearby radio off to test the Wi-Fi network on its own."
                          : "Only the Wi-Fi network is used: you'll only see people joined to the same Wi-Fi as you. If nobody shows up, this network may block phones from seeing each other; turn Nearby radio back on. Bluetooth still reaches locked phones nearby.")
+                }
+
+                Section {
+                    @Bindable var connectionSettings = connectionSettings
+                    Toggle(isOn: $connectionSettings.onlineGamesEnabled) {
+                        Label("Online games", systemImage: "globe")
+                    }
+                    if connectionSettings.onlineGamesEnabled {
+                        LabeledContent("Right now", value: onlineStatusText)
+                    }
+                } header: {
+                    Text("Games")
+                } footer: {
+                    Text(connectionSettings.onlineGamesEnabled
+                         ? "With internet, games are hosted online: share a code and play with anyone, anywhere, even on hotel or ship Wi-Fi that hides phones from each other. Without internet, a phone hosts the game and players need to be connected nearby."
+                         : "Every game is hosted on a phone, and players need to be connected nearby. Turn this on to play online when the internet is available.")
                 }
 
                 Section {
@@ -149,6 +166,14 @@ struct ProfileView: View {
 }
 
 extension ProfileView {
+    private var onlineStatusText: String {
+        switch online.state {
+        case .checking: "Checking…"
+        case .online: "Online"
+        case .offline: "No internet: games are hosted nearby"
+        }
+    }
+
     private var bluetoothStatus: String {
         switch CBManager.authorization {
         case .allowedAlways: "Allowed"

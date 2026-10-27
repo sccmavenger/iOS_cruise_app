@@ -81,7 +81,8 @@ nonisolated enum EnvelopeCodec {
         case .lobbyOffer(let offer):
             guard (offer.gameType.minPlayers...offer.gameType.maxPlayers).contains(offer.maxSeats),
                   (0...offer.maxSeats).contains(offer.seatsTaken),
-                  Nickname.sanitize(offer.hostNickname) != nil
+                  Nickname.sanitize(offer.hostNickname) != nil,
+                  offer.cloudCode.map({ $0.count == 8 && $0.allSatisfy { $0.isASCII && ($0.isUppercase || $0.isNumber) } }) ?? true
             else { throw .invalidField("lobbyOffer") }
         case .joinAccept(let roster):
             guard (roster.gameType.minPlayers...roster.gameType.maxPlayers).contains(roster.maxSeats),

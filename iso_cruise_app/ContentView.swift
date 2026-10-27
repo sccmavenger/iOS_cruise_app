@@ -242,7 +242,10 @@ struct MatchAccessoryView: View {
 #Preview {
     let profile = ProfileStore()
     let session = SessionManager(transport: MultipeerTransport(), profile: profile)
+    let settings = ConnectionSettings()
     ContentView()
+        .environment(settings)
+        .environment(OnlineStatus(service: LiveCloudGameService(), settings: settings))
         .environment(profile)
         .environment(session)
         .environment(GameCoordinator(session: session))

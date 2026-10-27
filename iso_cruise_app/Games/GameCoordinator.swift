@@ -13,6 +13,11 @@ import Observation
 ///   background), the match pauses for up to `awayTimeout` and resumes when they're back.
 ///   The host resends the current state to a returning player. There is no host
 ///   migration: if the host never returns, the match ends.
+///
+/// Online games (version 2): when the internet is reachable, the online game service hosts
+/// instead of a phone (see "Online" below and `server/game-worker`). The lobby, snapshot and
+/// `play(_:)` surface is the same, so every game view works unchanged; ids are the room's
+/// seat ids ("seat0", …) rather than mesh ids, and `localId` is this phone's seat.
 @Observable
 final class GameCoordinator {
     struct Offer: Identifiable, Equatable {
@@ -32,12 +37,17 @@ final class GameCoordinator {
     struct Lobby: Equatable {
         let id: UUID
         let gameType: GameType
-        let hostId: String
+        /// The host's id. Online, the organizer's seat (it moves if they leave the lobby).
+        var hostId: String
         let maxSeats: Int
         var players: [LobbyPlayer]
         var phase: Phase = .lobby
         /// Seat order once the game starts.
         var seats: [String] = []
+        /// Set when the online game service hosts this game: the invite code.
+        var cloudCode: String? = nil
+
+        var isOnline: Bool { cloudCode != nil }
 
         func player(_ id: String) -> LobbyPlayer? { players.first { $0.id == id } }
         var isFull: Bool { players.count >= maxSeats }
@@ -80,6 +90,18 @@ final class GameCoordinator {
     /// Call the completion with whether it arrived.
     @ObservationIgnored var onRelayMove: ((_ hostId: String, _ lobbyId: UUID, MoveRequestPayload, @escaping (Bool) -> Void) -> Void)?
 
+    // Online: the seat this phone holds, and the room's live connection.
+    private(set) var cloudSeat: CloudSeat?
+    private(set) var isCloudConnected = false
+    /// Creating or joining an online game is in progress.
+    private(set) var isConnectingOnline = false
+    @ObservationIgnored private let cloud: CloudGameService?
+    @ObservationIgnored private let cloudStore: CloudRoomStore?
+    @ObservationIgnored private let onlineAvailable: () async -> Bool
+    @ObservationIgnored private var cloudConnection: (any CloudRoomConnection)?
+    /// A move sent but not yet answered; re-sent with the same id after a reconnect.
+    @ObservationIgnored private var pendingCloudMove: MoveRequestPayload?
+
     // Host-only authoritative state.
     @ObservationIgnored private var authoritative: GameEngine.State?
     @ObservationIgnored private var seenMoveIds: Set<UUID> = []
@@ -96,8 +118,17 @@ final class GameCoordinator {
     @ObservationIgnored private var declinedHosts: [String: Date] = [:]
     static let declineMute: TimeInterval = 2 * 60
 
-    init(session: SessionManager) {
+    /// `cloud` is nil in builds and tests without online play; then every game is phone-hosted.
+    init(
+        session: SessionManager,
+        cloud: CloudGameService? = nil,
+        cloudStore: CloudRoomStore? = nil,
+        onlineAvailable: @escaping () async -> Bool = { false }
+    ) {
         self.session = session
+        self.cloud = cloud
+        self.cloudStore = cloudStore
+        self.onlineAvailable = onlineAvailable
         session.onGameEnvelope = { [weak self] envelope, identity in
             self?.handle(envelope, from: identity)
         }
@@ -112,7 +143,8 @@ final class GameCoordinator {
         }
     }
 
-    var localId: String { session.localId }
+    /// This phone's player id: its seat in an online game, its mesh id otherwise.
+    var localId: String { cloudSeat?.seat ?? session.localId }
     var isHost: Bool { lobby?.hostId == localId }
 
     var openOffers: [Offer] {
@@ -138,12 +170,16 @@ final class GameCoordinator {
     }
 
     var isHostAway: Bool {
-        guard let lobby, !isHost else { return false }
+        guard let lobby, !isHost, !lobby.isOnline else { return false }
         return awayIds.contains(lobby.hostId)
     }
 
     var canStart: Bool {
         guard let lobby, isHost, lobby.phase == .lobby, lobby.gameType.isPlayable else { return false }
+        if lobby.isOnline {
+            // Online there's no "ready" step: everyone who's here and connected can start.
+            return isCloudConnected && lobby.players.count >= lobby.gameType.minPlayers && awayIds.isEmpty
+        }
         return lobby.players.count >= lobby.gameType.minPlayers
             && lobby.players.allSatisfy { $0.isHost || $0.isReady }
             && lobby.players.allSatisfy { !awayIds.contains($0.id) }
@@ -157,12 +193,48 @@ final class GameCoordinator {
 
     // MARK: - Local actions
 
+    /// Hosts online when the internet is reachable, and on this phone otherwise.
     func hostLobby(_ gameType: GameType) {
-        guard lobby == nil, joiningLobbyId == nil else {
+        guard lobby == nil, joiningLobbyId == nil, !isConnectingOnline else {
             notice = "Finish or leave your current game first."
             return
         }
         guard gameType.isPlayable else { return }
+        guard let cloud else { return hostOnThisPhone(gameType) }
+        isConnectingOnline = true
+        Task {
+            defer { isConnectingOnline = false }
+            guard await onlineAvailable() else { return hostOnThisPhone(gameType) }
+            do throws(CloudError) {
+                enterCloudRoom(try await cloud.createRoom(gameType, nickname: session.localIdentity.nickname))
+            } catch {
+                // The service is unreachable after all: play on this phone rather than not at all.
+                hostOnThisPhone(gameType)
+                notice = "Couldn't reach the online game service, so this game is hosted on your phone. Players need to be connected nearby."
+            }
+        }
+    }
+
+    /// Joins an online game by its invite code, from anywhere.
+    func joinOnline(code: String) {
+        guard lobby == nil, joiningLobbyId == nil, !isConnectingOnline else {
+            notice = "Finish or leave your current game first."
+            return
+        }
+        guard let cloud else { return }
+        isConnectingOnline = true
+        Task {
+            defer { isConnectingOnline = false }
+            do throws(CloudError) {
+                enterCloudRoom(try await cloud.joinRoom(code: code, nickname: session.localIdentity.nickname))
+            } catch {
+                notice = error.message
+            }
+        }
+    }
+
+    private func hostOnThisPhone(_ gameType: GameType) {
+        guard lobby == nil else { return }
         let me = session.localIdentity
         lobby = Lobby(
             id: UUID(),
@@ -193,6 +265,8 @@ final class GameCoordinator {
             return
         }
         guard !offer.isFull else { return }
+        // A nearby friend's game that's hosted online: join it through the service.
+        if let code = offer.payload.cloudCode { return joinOnline(code: code) }
         joiningLobbyId = offer.id
         let sent = session.send(.joinRequest(LobbyRefPayload(lobbyId: offer.id)), sessionId: offer.id, to: [offer.host.id])
         if sent == nil {
@@ -217,11 +291,15 @@ final class GameCoordinator {
     }
 
     func setReady(_ ready: Bool) {
-        guard let lobby, !isHost, lobby.phase == .lobby else { return }
+        guard let lobby, !isHost, lobby.phase == .lobby, !lobby.isOnline else { return }
         session.send(.ready(ReadyPayload(lobbyId: lobby.id, isReady: ready)), sessionId: lobby.id, to: [lobby.hostId])
     }
 
     func startGame() {
+        if lobby?.isOnline == true {
+            if canStart { cloudConnection?.send(.start) }
+            return
+        }
         guard canStart, var lobby, let state = GameEngine.newGame(lobby.gameType, seats: lobby.players.map(\.id)) else { return }
         lobby.seats = lobby.players.map(\.id)
         lobby.phase = .playing
@@ -239,6 +317,13 @@ final class GameCoordinator {
     func play(_ move: GameMove) {
         guard let lobby, lobby.phase == .playing, pendingMoveId == nil else { return }
         let request = MoveRequestPayload(moveId: UUID(), baseRevision: revision, move: move)
+        if lobby.isOnline {
+            // Sent now if connected, otherwise as soon as the connection is back.
+            pendingMoveId = request.moveId
+            pendingCloudMove = request
+            cloudConnection?.send(.move(request))
+            return
+        }
         if isHostAway {
             relayToAwayHost(request, in: lobby)
             return
@@ -289,12 +374,20 @@ final class GameCoordinator {
     func requestRematch() {
         guard let lobby, lobby.phase == .playing, snapshot?.isFinished == true else { return }
         rematchVotes.insert(localId)
+        if lobby.isOnline {
+            cloudConnection?.send(.rematch)
+            return
+        }
         session.send(.rematchRequest(LobbyRefPayload(lobbyId: lobby.id)), sessionId: lobby.id, to: otherMembers)
         if isHost { startRematchIfAgreed() }
     }
 
     func leave() {
         guard let lobby else { return }
+        if lobby.isOnline {
+            leaveCloudRoom(tellServer: true)
+            return resetMatch()
+        }
         var recipients = otherMembers
         if isHost {
             // Withdraw the public offer from everyone, not just members.
@@ -308,6 +401,7 @@ final class GameCoordinator {
     /// host, in case the host still thinks the game is on.
     func dismissEndedMatch() {
         guard let lobby, case .ended = lobby.phase else { return }
+        if lobby.isOnline { return resetMatch() }
         if !isHost {
             session.send(.leave(LeavePayload(lobbyId: lobby.id)), sessionId: lobby.id, to: [lobby.hostId])
         }
@@ -372,7 +466,8 @@ final class GameCoordinator {
     }
 
     private func hostReceiveJoin(_ ref: LobbyRefPayload, from identity: PeerIdentity) {
-        guard isHost, var lobby, lobby.id == ref.lobbyId else {
+        // Online games are joined through the service; an older app asking here can't join.
+        guard isHost, var lobby, lobby.id == ref.lobbyId, !lobby.isOnline else {
             session.send(.joinReject(JoinRejectPayload(lobbyId: ref.lobbyId, reason: .notFound)), sessionId: ref.lobbyId, to: [identity.id])
             return
         }
@@ -592,6 +687,8 @@ final class GameCoordinator {
     /// Back in the foreground. People who reconnect within a few seconds were never really
     /// away; for anyone still missing, start the usual timeout and nudges.
     private func sessionResumed() {
+        // Back from the background: the online room's socket probably died meanwhile.
+        cloudConnection?.reconnectNow()
         guard suspendedLocally else { return }
         suspendedLocally = false
         let ids = awayIds
@@ -780,7 +877,8 @@ final class GameCoordinator {
     /// Asks the app to nudge anyone the match is waiting on who is away. Every device that
     /// notices asks; the nudge service and the receiving phone both rate-limit.
     private func requestNudgesIfNeeded() {
-        guard !suspendedLocally, let lobby, lobby.phase == .playing, let snapshot else { return }
+        // Bluetooth nudges reach nearby phones by mesh id; online seats have none.
+        guard !suspendedLocally, let lobby, lobby.phase == .playing, !lobby.isOnline, let snapshot else { return }
         for playerId in snapshot.awaitingPlayerIds.intersection(awayIds) where playerId != localId {
             onNudgeNeeded?(playerId, lobby.gameType)
         }
@@ -799,7 +897,8 @@ final class GameCoordinator {
             hostNickname: session.localIdentity.nickname,
             maxSeats: lobby.maxSeats,
             seatsTaken: lobby.players.count,
-            invitedPlayerId: invitedPlayerId
+            invitedPlayerId: invitedPlayerId,
+            cloudCode: lobby.cloudCode
         )
     }
 
@@ -823,6 +922,7 @@ final class GameCoordinator {
     }
 
     private func resetMatch() {
+        leaveCloudRoom(tellServer: false)
         // A lobby we were part of is never joinable again.
         if let id = lobby?.id { offers[id] = nil }
         lobby = nil
@@ -843,6 +943,163 @@ final class GameCoordinator {
         relayedMoveDelivered = false
         turnRevision = 0
     }
+
+    // MARK: - Online
+
+    /// After a relaunch, goes back to the online game this phone was in.
+    func restoreOnlineGame() {
+        guard lobby == nil, cloud != nil, let seat = cloudStore?.load() else { return }
+        enterCloudRoom(seat)
+    }
+
+    private func enterCloudRoom(_ seat: CloudSeat) {
+        guard lobby == nil, let cloud else { return }
+        cloudStore?.save(seat)
+        cloudSeat = seat
+        let me = session.localIdentity
+        // A placeholder until the server's roster arrives a moment later.
+        lobby = Lobby(
+            id: UUID(),
+            gameType: seat.game,
+            hostId: seat.seat == "seat0" ? seat.seat : "",
+            maxSeats: seat.maxSeats,
+            players: [LobbyPlayer(id: seat.seat, nickname: me.nickname, isReady: true, isHost: seat.seat == "seat0")],
+            cloudCode: seat.code
+        )
+        snapshot = nil
+        revision = -1
+        invitedIds = []
+        cloudConnection = cloud.openRoom(seat) { [weak self] event in
+            self?.handleCloud(event)
+        }
+        // Nearby friends see it in their list too, and join it through the service.
+        broadcastOffer()
+    }
+
+    /// Ends this phone's part in the online room. `tellServer`: the player chose to leave, so
+    /// the seat is given up (mid-game that ends the match for everyone, like a phone host).
+    private func leaveCloudRoom(tellServer: Bool) {
+        guard let connection = cloudConnection else {
+            if cloudSeat != nil { cloudStore?.clear() }
+            cloudSeat = nil
+            return
+        }
+        if tellServer {
+            connection.send(.leave)
+            // Give the message a moment to go out before the socket closes.
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                connection.close()
+            }
+        } else {
+            connection.close()
+        }
+        if tellServer || isEnded { cloudStore?.clear() }
+        cloudConnection = nil
+        cloudSeat = nil
+        isCloudConnected = false
+        pendingCloudMove = nil
+    }
+
+    private var isEnded: Bool {
+        if case .ended = lobby?.phase { return true }
+        return false
+    }
+
+    /// Internal for tests.
+    func handleCloud(_ event: CloudRoomEvent) {
+        guard lobby?.isOnline == true else { return }
+        switch event {
+        case .connected:
+            isCloudConnected = true
+            // A move whose answer was lost with the old connection: the same id is safe to resend.
+            if let pendingCloudMove { cloudConnection?.send(.move(pendingCloudMove)) }
+        case .disconnected:
+            isCloudConnected = false
+        case .roomGone:
+            isCloudConnected = false
+            cloudStore?.clear()
+            cloudConnection = nil
+            pendingMoveId = nil
+            pendingCloudMove = nil
+            if var lobby, !isEnded {
+                lobby.phase = .ended("This online game has ended.")
+                self.lobby = lobby
+            }
+        case .message(.roster(let roster)):
+            receiveCloudRoster(roster)
+        case .message(.snapshot(let revision, let view)):
+            receiveCloudSnapshot(view, revision: revision)
+        case .message(.result(let result)):
+            guard result.moveId == pendingMoveId?.uuidString else { return }
+            pendingMoveId = nil
+            pendingCloudMove = nil
+            if !result.ok {
+                notice = result.error == "staleBoard" ? MoveErrorMessage.staleBoard : (result.message ?? "That move wasn't accepted.")
+            }
+        case .message(.error(let error)):
+            switch error {
+            case "notEnoughPlayers": notice = "Waiting for more players to join."
+            case "notAllowed": notice = "Only the host can start the game."
+            default: break
+            }
+        case .message(.other):
+            break
+        }
+    }
+
+    private func receiveCloudRoster(_ roster: CloudRoster) {
+        guard var lobby, lobby.cloudCode == roster.code, roster.you == localId else { return }
+        let wasLobby = lobby.phase == .lobby, wasHost = isHost
+        lobby.hostId = roster.organizer
+        // Names from the server get the same cleaning and filtering as names seen nearby.
+        lobby.players = roster.players.map { player in
+            let nickname = player.seat == localId
+                ? session.localIdentity.nickname
+                : session.filter.safeNickname(Nickname.sanitize(player.nickname) ?? "Player")
+            return LobbyPlayer(id: player.seat, nickname: nickname, isReady: true, isHost: player.seat == roster.organizer)
+        }
+        awayIds = Set(roster.players.filter { !$0.connected && $0.seat != localId }.map(\.seat))
+        rematchVotes = Set(roster.rematchVotes)
+        switch roster.phase {
+        case .lobby:
+            break
+        case .playing:
+            if lobby.phase == .lobby {
+                lobby.phase = .playing
+                lobby.seats = lobby.players.map(\.id)
+            }
+        case .ended:
+            let message = roster.endedMessage.map { session.filter.check($0).isAllowed ? $0 : "The game ended." } ?? "The game ended."
+            lobby.phase = .ended(message)
+            pendingMoveId = nil
+            pendingCloudMove = nil
+            cloudStore?.clear()
+        }
+        self.lobby = lobby
+        if lobby.phase == .lobby {
+            if isHost { broadcastOffer() }
+        } else if wasLobby, wasHost || isHost {
+            // Started or over: take it off nearby friends' lists.
+            withdrawOffer(from: session.connectedIdentities.map(\.id))
+        }
+    }
+
+    private func receiveCloudSnapshot(_ view: GameStateSnapshot, revision newRevision: Int) {
+        guard var lobby, newRevision > revision, view.gameType == lobby.gameType,
+              view.playerIds.contains(localId), Self.isAddressedToMe(view, localId: localId)
+        else { return }
+        if lobby.phase == .lobby { lobby.phase = .playing }
+        lobby.seats = view.playerIds
+        self.lobby = lobby
+        let previous = snapshot
+        snapshot = view
+        revision = newRevision
+        pendingMoveId = nil
+        pendingCloudMove = nil
+        if previous?.isFinished == true, !view.isFinished { rematchVotes = [] }
+        snapshotDidChange(from: previous)
+    }
 }
 
 extension GameCoordinator {
@@ -853,7 +1110,8 @@ extension GameCoordinator {
     /// the conversation list. See `SessionManager.matchConversation(lobbyId:named:players:)`.
     @discardableResult
     func matchConversation() -> ChatStore.Conversation? {
-        guard let lobby else { return nil }
+        // Online seats aren't mesh contacts, so there's no table chat for them.
+        guard let lobby, !lobby.isOnline else { return nil }
         let players = lobby.players.map { PeerIdentity(id: $0.id, nickname: $0.nickname) }
         return session.matchConversation(lobbyId: lobby.id, named: lobby.gameType.displayName, players: players)
     }

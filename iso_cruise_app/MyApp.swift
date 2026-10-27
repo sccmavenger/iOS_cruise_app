@@ -16,6 +16,8 @@ import UIKit
     /// code. Nil in demo builds, where the transport is faked.
     @State private var lan: LANTransport?
     @State private var connectionSettings: ConnectionSettings
+    /// Whether games can be hosted online right now.
+    @State private var online: OnlineStatus
     #if DEBUG
     /// Scripted screenshot scene, when launched with `-CruiseLANDemo <scene>`.
     @State private var demo: DemoMode?
@@ -63,7 +65,20 @@ import UIKit
         #endif
         let session = SessionManager(transport: transport, profile: profile, safety: SafetyStore(),
                                      identity: identity, telemetry: telemetry)
-        let games = GameCoordinator(session: session)
+        // Online games: hosted by the game service when the internet is reachable, on a phone
+        // otherwise. Demo builds stay fully offline.
+        let cloudService = LiveCloudGameService()
+        let online = OnlineStatus(service: cloudService, settings: connectionSettings)
+        var cloud: CloudGameService? = cloudService
+        #if DEBUG
+        if demo != nil { cloud = nil }
+        #endif
+        let games = GameCoordinator(
+            session: session,
+            cloud: cloud,
+            cloudStore: CloudRoomStore(),
+            onlineAvailable: { await online.currentlyOnline() }
+        )
         connectionSettings.apply = { [weak session] enabled in
             composite.setEnabled(enabled, for: .multipeer)
             session?.restartTransport()
@@ -89,6 +104,7 @@ import UIKit
         _reporter = State(initialValue: TelemetryReporter(store: telemetry))
         _lan = State(initialValue: lan)
         _connectionSettings = State(initialValue: connectionSettings)
+        _online = State(initialValue: online)
     }
 
     var body: some Scene {
@@ -103,6 +119,7 @@ import UIKit
                 .environment(probe)
                 .environment(\.lanTransport, lan)
                 .environment(connectionSettings)
+                .environment(online)
                 .task(id: profile.nickname) {
                     #if DEBUG
                     if let demo {
@@ -112,6 +129,9 @@ import UIKit
                     #endif
                     // Ask for notifications and Bluetooth only after onboarding, when they make sense.
                     guard profile.nickname != nil else { return }
+                    online.start()
+                    // iOS may have quit the app mid-game; go back to the online game, if any.
+                    games.restoreOnlineGame()
                     nudges.start()
                     probe.start()
                     await notifications.requestAuthorization()
@@ -132,6 +152,7 @@ import UIKit
                 // Back on screen but not yet active, for example behind a system alert.
                 // Peer-to-peer works now, so reconnect without waiting for the alert.
                 session.resume()
+                online.refresh()
             case .active where old == .inactive && !session.isSuspended:
                 // Already resumed on the way through `.inactive`.
                 break
@@ -157,6 +178,7 @@ import UIKit
                 }
             case .active:
                 session.resume()
+                online.refresh()
             default:
                 break
             }

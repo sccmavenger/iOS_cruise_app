@@ -5,20 +5,26 @@ struct GamesHomeView: View {
     @Environment(GameCoordinator.self) private var games
     @Environment(SessionManager.self) private var session
     @Environment(AppState.self) private var app
+    @Environment(OnlineStatus.self) private var online
     @State private var selectedGame: GameType?
+    @State private var isJoiningByCode = false
 
     var body: some View {
         @Bindable var games = games
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if session.connectedIdentities.isEmpty {
-                        Label("Connect to someone in the Chat tab's People list to play together.", systemImage: "person.2.wave.2")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .padding()
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .glassEffect(.regular, in: .rect(cornerRadius: 18))
+                    HostingModeBanner(isEmpty: session.connectedIdentities.isEmpty)
+                    if online.canPlayOnline {
+                        Button {
+                            isJoiningByCode = true
+                        } label: {
+                            Label("Join a Game with a Code", systemImage: "number.circle.fill")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.glass)
+                        .disabled(games.lobby != nil || games.isConnectingOnline)
                     }
 
                     ForEach(GameType.allCases) { game in
@@ -37,7 +43,13 @@ struct GamesHomeView: View {
             .sheet(item: $selectedGame) { game in
                 GameDetailSheet(game: game)
             }
-            .onChange(of: app.sheetDismissals) { selectedGame = nil }
+            .sheet(isPresented: $isJoiningByCode) {
+                JoinOnlineSheet()
+            }
+            .onChange(of: app.sheetDismissals) {
+                selectedGame = nil
+                isJoiningByCode = false
+            }
             .alert(
                 games.notice ?? "",
                 isPresented: Binding(
@@ -57,6 +69,7 @@ struct GameDetailSheet: View {
     let game: GameType
     @Environment(GameCoordinator.self) private var games
     @Environment(SessionManager.self) private var session
+    @Environment(OnlineStatus.self) private var online
     @Environment(AppState.self) private var app
     @Environment(\.dismiss) private var dismiss
 
@@ -91,18 +104,20 @@ struct GameDetailSheet: View {
                 }
 
                 Section {
-                    let canHost = games.lobby == nil && games.joiningLobbyId == nil
+                    let canHost = games.lobby == nil && games.joiningLobbyId == nil && !games.isConnectingOnline
                     Button {
                         games.hostLobby(game)
                         dismiss()
                     } label: {
                         // Grey the whole row (icon included) when it can't be used, so it doesn't look tappable.
-                        Label("Host a New Game", systemImage: "plus.circle.fill")
+                        Label(online.canPlayOnline ? "Host a New Online Game" : "Host a New Game", systemImage: "plus.circle.fill")
                             .foregroundStyle(canHost ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
                     }
                     .disabled(!canHost)
                 } footer: {
-                    Text("Nearby connected players will see your game and can join. You can also invite someone directly from the lobby.")
+                    Text(online.canPlayOnline
+                         ? "Hosted online, so it keeps going even if your phone drops out. You get a code to share with anyone, anywhere, and nearby friends see it too."
+                         : "Hosted on your phone. Nearby connected players will see your game and can join. You can also invite someone directly from the lobby.")
                 }
 
                 Section("Open games nearby") {
@@ -121,7 +136,7 @@ struct GameDetailSheet: View {
                                 VStack(alignment: .leading) {
                                     Text("\(offer.host.labeledName)'s game")
                                         .foregroundStyle(.primary)
-                                    Text("\(offer.payload.seatsTaken) of \(offer.payload.maxSeats) seats taken")
+                                    Text("\(offer.payload.seatsTaken) of \(offer.payload.maxSeats) seats taken\(offer.payload.cloudCode == nil ? "" : " · online")")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
@@ -151,6 +166,105 @@ struct GameDetailSheet: View {
                 if id != nil { dismiss() }
             }
         }
+    }
+}
+
+/// Says who will host a new game right now, since that decides who can join.
+struct HostingModeBanner: View {
+    /// Nobody is connected nearby.
+    let isEmpty: Bool
+    @Environment(OnlineStatus.self) private var online
+
+    var body: some View {
+        Label(text, systemImage: symbol)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .glassEffect(.regular, in: .rect(cornerRadius: 18))
+            .accessibilityElement(children: .combine)
+    }
+
+    private var text: String {
+        if online.canPlayOnline {
+            return "Online: games are hosted on the internet. Play with anyone, anywhere, with a code."
+        }
+        if online.isEnabled, online.state == .checking {
+            return "Checking your internet connection…"
+        }
+        let nearby = isEmpty ? " Connect to someone in the Chat tab's People list to play together." : ""
+        return online.isEnabled
+            ? "No internet: games are hosted on a phone, so players need to be connected nearby.\(nearby)"
+            : "Online games are off in Profile: games are hosted on a phone nearby.\(nearby)"
+    }
+
+    private var symbol: String {
+        if online.canPlayOnline { return "globe" }
+        return online.state == .checking && online.isEnabled ? "globe.badge.chevron.backward" : "person.2.wave.2"
+    }
+}
+
+/// Enter a friend's invite code to join their online game from anywhere.
+struct JoinOnlineSheet: View {
+    @Environment(GameCoordinator.self) private var games
+    @Environment(\.dismiss) private var dismiss
+    @State private var code = ""
+    @FocusState private var focused: Bool
+
+    private var cleaned: String { code.uppercased().filter { $0.isLetter || $0.isNumber } }
+
+    var body: some View {
+        @Bindable var games = games
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("ABCD-1234", text: $code)
+                        .font(.title2.monospaced().weight(.semibold))
+                        .textInputAutocapitalization(.characters)
+                        .autocorrectionDisabled()
+                        .focused($focused)
+                        .submitLabel(.join)
+                        .onSubmit(join)
+                        .accessibilityLabel("Invite code")
+                } footer: {
+                    Text("The host sees the code in their game's lobby. It's 8 letters and numbers.")
+                }
+                Section {
+                    Button(action: join) {
+                        HStack {
+                            Text("Join Game").font(.headline)
+                            if games.isConnectingOnline {
+                                Spacer()
+                                ProgressView()
+                            }
+                        }
+                    }
+                    .disabled(cleaned.count != 8 || games.isConnectingOnline)
+                }
+            }
+            .navigationTitle("Join with a Code")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .onAppear { focused = true }
+            .onChange(of: games.lobby?.id) { _, id in
+                if id != nil { dismiss() }
+            }
+            .alert(
+                games.notice ?? "",
+                isPresented: Binding(get: { games.notice != nil }, set: { if !$0 { games.notice = nil } })
+            ) {
+                Button("OK", role: .cancel) {}
+            }
+        }
+    }
+
+    private func join() {
+        guard cleaned.count == 8 else { return }
+        games.joinOnline(code: cleaned)
     }
 }
 

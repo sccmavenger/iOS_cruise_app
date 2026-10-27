@@ -76,6 +76,12 @@ struct MatchContainerView: View {
 
     private var leaveMessage: String {
         guard let lobby = games.lobby else { return "" }
+        if lobby.isOnline {
+            if lobby.phase == .lobby {
+                return games.isHost ? "Another player will become the host." : "Your seat will open up for someone else."
+            }
+            return "The game will end for the other players."
+        }
         if games.isHost { return "You're the host. Leaving ends the game for everyone." }
         return lobby.phase == .lobby ? "Your seat will open up for someone else." : "The game will end for the other players."
     }
@@ -112,6 +118,10 @@ struct LobbyView: View {
                 }
             }
 
+            if let code = lobby.cloudCode {
+                OnlineCodeSection(code: code, game: lobby.gameType, isConnected: games.isCloudConnected)
+            }
+
             Section("Players") {
                 ForEach(lobby.players) { player in
                     HStack {
@@ -119,12 +129,15 @@ struct LobbyView: View {
                             .foregroundStyle(player.isHost ? Theme.sunset : Theme.teal)
                             .frame(width: 28)
                             .accessibilityHidden(true)
-                        Text(player.id == games.localId ? "\(player.nickname) (you)" : "\(player.nickname) #\(Nickname.tag(for: player.id))")
+                        // Online seats aren't mesh ids, so they have no tag to show.
+                        Text(player.id == games.localId ? "\(player.nickname) (you)" : lobby.isOnline ? player.nickname : "\(player.nickname) #\(Nickname.tag(for: player.id))")
                         Spacer()
                         if games.awayIds.contains(player.id) {
                             Label("Away", systemImage: "moon.zzz.fill").foregroundStyle(.secondary)
                         } else if player.isHost {
                             Text("Host").foregroundStyle(.secondary)
+                        } else if lobby.isOnline {
+                            Label("Here", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                         } else {
                             Label(player.isReady ? "Ready" : "Not ready", systemImage: player.isReady ? "checkmark.circle.fill" : "circle.dashed")
                                 .foregroundStyle(player.isReady ? .green : .secondary)
@@ -172,9 +185,11 @@ struct LobbyView: View {
                             .disabled(games.invitedIds.contains(identity.id))
                         }
                     } header: {
-                        Text("Invite")
+                        Text(lobby.isOnline ? "Invite people nearby" : "Invite")
                     } footer: {
-                        Text("Your game is also visible to everyone you're connected with.")
+                        Text(lobby.isOnline
+                             ? "People you're connected with nearby also see your game and can join it."
+                             : "Your game is also visible to everyone you're connected with.")
                     }
                 }
 
@@ -190,13 +205,21 @@ struct LobbyView: View {
                     .disabled(!games.canStart)
                     .listRowBackground(Color.clear)
                 } footer: {
-                    if !games.canStart {
+                    if !games.canStart, lobby.isOnline, !games.isCloudConnected {
+                        Text("Connecting to the online game service…")
+                    } else if !games.canStart {
                         Text(lobby.players.count < lobby.gameType.minPlayers
                              ? "Waiting for \(lobby.gameType.minPlayers - lobby.players.count) more player(s)."
                              : lobby.players.contains(where: { games.awayIds.contains($0.id) })
-                                ? "Waiting for everyone to come back."
+                                ? (lobby.isOnline ? "Waiting for everyone to connect." : "Waiting for everyone to come back.")
                                 : "Waiting for everyone to be ready.")
                     }
+                }
+            } else if lobby.isOnline {
+                Section {
+                    Label(games.isCloudConnected ? "You're in. The host starts the game when everyone's here." : "Connecting to the online game service…",
+                          systemImage: games.isCloudConnected ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath")
+                        .foregroundStyle(.secondary)
                 }
             } else if let me {
                 Section {
@@ -226,7 +249,13 @@ struct MatchView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
-                if !games.awayIds.isEmpty {
+                if lobby.isOnline, !games.isCloudConnected {
+                    AwayBanner(
+                        title: "Reconnecting to the game…",
+                        detail: "Your game is saved online. A move you make now is sent as soon as you're back.",
+                        isReconnecting: true
+                    )
+                } else if !games.awayIds.isEmpty {
                     AwayBanner(title: awayTitle, detail: awayDetail, isReconnecting: isReconnecting)
                 }
                 switch games.snapshot {
@@ -245,7 +274,7 @@ struct MatchView: View {
                 case .tonk(let table):
                     TonkView(table: table)
                 case nil:
-                    ProgressView("Waiting for the host…")
+                    ProgressView(lobby.isOnline ? "Connecting to the game…" : "Waiting for the host…")
                         .padding(.top, 80)
                 }
             }
@@ -256,6 +285,39 @@ struct MatchView: View {
                 .frame(height: 90)
                 .opacity(0.35)
                 .ignoresSafeArea()
+        }
+    }
+}
+
+/// An online game's invite code, to read out or share.
+struct OnlineCodeSection: View {
+    let code: String
+    let game: GameType
+    let isConnected: Bool
+
+    var body: some View {
+        let shown = CloudConfig.displayCode(code)
+        Section {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Invite code")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(shown)
+                        .font(.title.monospaced().weight(.bold))
+                        .textSelection(.enabled)
+                        .accessibilityLabel("Invite code \(shown.map(String.init).joined(separator: " "))")
+                }
+                Spacer()
+                ShareLink(item: "Join my \(game.displayName) game on CruiseLAN: open Games, tap Join a Game with a Code, and enter \(shown).") {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
+                .buttonStyle(.glass)
+            }
+        } header: {
+            Label("Online game", systemImage: isConnected ? "globe" : "arrow.triangle.2.circlepath")
+        } footer: {
+            Text("Anyone with CruiseLAN can join with this code, from any network or city. The game is saved online, so it keeps going even if someone's phone drops out.")
         }
     }
 }
@@ -295,6 +357,7 @@ extension MatchView {
 
     fileprivate var awayTitle: String {
         let names = games.awayIds.sorted().map(games.name(for:)).formatted(.list(type: .and))
+        if lobby.isOnline { return "\(names) \(games.awayIds.count == 1 ? "is" : "are") away" }
         if isReconnecting { return "Reconnecting to \(names)…" }
         // Only say they stepped away if their app said so; otherwise we just can't reach them.
         let saidAway = games.awayIds.isSubset(of: games.session.steppedAwayIds)
@@ -302,6 +365,7 @@ extension MatchView {
     }
 
     fileprivate var awayDetail: String {
+        if lobby.isOnline { return "The game is saved online and carries on when they're back." }
         if isReconnecting { return "You were away for a moment. This usually takes a few seconds." }
         if games.relayedMoveDelivered {
             return "Your move reached their phone over Bluetooth. It shows here when they're back."

@@ -211,6 +211,9 @@ nonisolated struct LobbyOfferPayload: Codable, Equatable, Sendable {
     var seatsTaken: Int
     /// When set, this offer is a direct invitation to one player rather than a public advertisement.
     var invitedPlayerId: String? = nil
+    /// Set when the game is hosted online: nearby players join it through the online game
+    /// service with this invite code instead of asking the host's phone. Older versions ignore it.
+    var cloudCode: String? = nil
 }
 
 nonisolated struct LobbyRefPayload: Codable, Equatable, Sendable {
