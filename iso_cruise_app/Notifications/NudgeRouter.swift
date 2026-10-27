@@ -31,7 +31,8 @@ final class NudgeRouter {
         self.nudges = nudges
 
         session.onChatReceived = { [weak self] identity, text, conversationId in
-            guard let self else { return }
+            // With chat switched off there's nowhere to read it, so no badge or banner.
+            guard let self, AppFeatures.chatEnabled else { return }
             self.notifications.setBadge(self.session.chat.totalUnread)
             // No banner for the conversation that's on screen, or while the chat list is showing.
             guard self.session.chat.visibleConversationId != conversationId,

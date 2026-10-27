@@ -25,7 +25,7 @@ struct MatchContainerView: View {
             .navigationTitle(games.lobby?.gameType.displayName ?? "")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
+                if AppFeatures.chatEnabled { ToolbarItem(placement: .primaryAction) {
                     // Tucks the game away so the player can chat while waiting for their turn,
                     // landing straight in the chat with the people at this table rather than
                     // on the conversation list (where the default is "Everyone", which goes
@@ -42,7 +42,7 @@ struct MatchContainerView: View {
                             .labelStyle(.titleAndIcon)
                     }
                     .accessibilityHint("Opens the chat with the players in this game. The game keeps going and you can come back anytime.")
-                }
+                } }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Leave", role: .destructive) {
                         if case .ended = games.lobby?.phase {
@@ -96,9 +96,9 @@ struct LobbyView: View {
 
     private var me: LobbyPlayer? { lobby.player(games.localId) }
 
-    /// Connected people, plus people who are away (they get a notification and the invite when they're back).
+    /// Anyone nearby with CruiseLAN open who isn't already at this table.
     private var invitable: [PeerIdentity] {
-        session.reachableIdentities.filter { lobby.player($0.id) == nil }
+        session.nearbyPlayers.filter { lobby.player($0.id) == nil }
     }
 
     var body: some View {
@@ -160,7 +160,7 @@ struct LobbyView: View {
                 if !lobby.isFull {
                     Section {
                         if invitable.isEmpty {
-                            Text("No other connected people to invite. Connect to people from the Chat tab.")
+                            Text("Nobody else nearby has CruiseLAN open right now.")
                                 .foregroundStyle(.secondary)
                         }
                         ForEach(invitable, id: \.id) { identity in
@@ -170,11 +170,6 @@ struct LobbyView: View {
                                 HStack {
                                     VStack(alignment: .leading) {
                                         Text(identity.labeledName).foregroundStyle(.primary)
-                                        if !session.isConnected(identity.id) {
-                                            Text("Away · gets a notification")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                        }
                                     }
                                     Spacer()
                                     Text(games.invitedIds.contains(identity.id) ? "Invited" : "Invite")
@@ -188,8 +183,8 @@ struct LobbyView: View {
                         Text(lobby.isOnline ? "Invite people nearby" : "Invite")
                     } footer: {
                         Text(lobby.isOnline
-                             ? "People you're connected with nearby also see your game and can join it."
-                             : "Your game is also visible to everyone you're connected with.")
+                             ? "People nearby also see your game in their list and can join it."
+                             : "Anyone nearby with CruiseLAN open sees your game and can join it.")
                     }
                 }
 

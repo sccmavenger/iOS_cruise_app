@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Root of the app: onboarding until a nickname exists, then the Chat / Games tabs.
+/// Root of the app: onboarding until a nickname exists, then Games (plus Chat when enabled).
 struct ContentView: View {
     @Environment(ProfileStore.self) private var profile
     @Environment(SessionManager.self) private var session
@@ -27,7 +27,8 @@ struct ContentView: View {
             GetConnectedView()
         }
         .onChange(of: profile.nickname, initial: true) { _, nickname in
-            guard nickname != nil, !profile.hasSeen(.connectGuide) else { return }
+            // The connect guide is about connecting to people for chat; games don't need it.
+            guard AppFeatures.chatEnabled, nickname != nil, !profile.hasSeen(.connectGuide) else { return }
             // A beat after the permission prompts, so it doesn't fight them for the screen.
             Task {
                 try? await Task.sleep(for: .seconds(2))
@@ -51,18 +52,25 @@ struct MainTabView: View {
 
     var body: some View {
         @Bindable var app = app
-        TabView(selection: $app.selectedTab) {
-            Tab("Chat", systemImage: "bubble.left.and.bubble.right.fill", value: AppState.Tab.chat) {
-                ChatView()
-            }
-            .badge(session.chat.totalUnread)
-            Tab("Games", systemImage: "gamecontroller.fill", value: AppState.Tab.games) {
+        Group {
+            if AppFeatures.chatEnabled {
+                TabView(selection: $app.selectedTab) {
+                    Tab("Games", systemImage: "gamecontroller.fill", value: AppState.Tab.games) {
+                        GamesHomeView()
+                    }
+                    Tab("Chat", systemImage: "bubble.left.and.bubble.right.fill", value: AppState.Tab.chat) {
+                        ChatView()
+                    }
+                    .badge(session.chat.totalUnread)
+                }
+                // While the match is tucked away, a bar above the tabs leads back to it.
+                .tabViewBottomAccessory(isEnabled: games.lobby != nil && app.isMatchMinimized) {
+                    MatchAccessoryView()
+                }
+            } else {
+                // Games is the whole app while chat is off.
                 GamesHomeView()
             }
-        }
-        // While the match is tucked away, a bar above the tabs leads back to it.
-        .tabViewBottomAccessory(isEnabled: games.lobby != nil && app.isMatchMinimized) {
-            MatchAccessoryView()
         }
         // Presented from the root so a match opens no matter which tab is showing.
         .fullScreenCover(isPresented: $showMatch) {
@@ -100,7 +108,7 @@ struct MainTabView: View {
             notifications.isChatListOnScreen = onScreen
         }
         .onChange(of: session.chat.totalUnread, initial: true) { _, count in
-            notifications.setBadge(count)
+            notifications.setBadge(AppFeatures.chatEnabled ? count : 0)
         }
         .onChange(of: app.isMatchVisible, initial: true) { _, visible in
             notifications.isMatchOnScreen = visible
@@ -138,6 +146,8 @@ struct MainTabView: View {
     /// Navigates for a tapped notification.
     private func open(_ route: NotificationManager.Route) {
         switch route {
+        case .chat where !AppFeatures.chatEnabled, .chats where !AppFeatures.chatEnabled:
+            app.selectedTab = .games
         case .chat(let id):
             if session.chat.conversation(id) != nil { app.open(conversation: id) } else { app.selectedTab = .chat }
             if games.lobby != nil { app.isMatchMinimized = true }

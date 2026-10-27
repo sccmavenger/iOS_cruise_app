@@ -161,7 +161,7 @@ final class GameCoordinator {
     func name(for playerId: String) -> String {
         if playerId == localId { return "You" }
         if let player = lobby?.player(playerId) { return player.nickname }
-        return session.identity(for: playerId)?.nickname ?? "Player"
+        return session.player(for: playerId)?.nickname ?? "Player"
     }
 
     /// It's the local player's move (or they must answer a prompt) in a running match.
@@ -252,7 +252,7 @@ final class GameCoordinator {
     func invite(_ identity: PeerIdentity) {
         guard let lobby, isHost, lobby.phase == .lobby, !lobby.isFull, lobby.player(identity.id) == nil else { return }
         invitedIds.insert(identity.id)
-        if session.isConnected(identity.id) {
+        if session.isPlayerReachable(identity.id) {
             session.send(.lobbyOffer(offerPayload(for: lobby, invitedPlayerId: identity.id)), sessionId: lobby.id, to: [identity.id])
         } else {
             onInviteAway?(identity.id, lobby.gameType)
@@ -310,7 +310,7 @@ final class GameCoordinator {
 
         let others = otherMembers
         session.send(.startGame(StartGamePayload(lobbyId: lobby.id, gameType: lobby.gameType, seats: lobby.seats)), sessionId: lobby.id, to: others)
-        withdrawOffer(from: session.connectedIdentities.map(\.id).filter { !others.contains($0) })
+        withdrawOffer(from: session.nearbyPlayers.map(\.id).filter { !others.contains($0) })
         commit(state, revision: 0)
     }
 
@@ -391,7 +391,7 @@ final class GameCoordinator {
         var recipients = otherMembers
         if isHost {
             // Withdraw the public offer from everyone, not just members.
-            recipients = session.connectedIdentities.map(\.id)
+            recipients = session.nearbyPlayers.map(\.id)
         }
         session.send(.leave(LeavePayload(lobbyId: lobby.id)), sessionId: lobby.id, to: recipients)
         resetMatch()
@@ -693,7 +693,7 @@ final class GameCoordinator {
         suspendedLocally = false
         let ids = awayIds
         for id in ids where awayTimers[id] == nil {
-            let nickname = lobby?.player(id)?.nickname ?? session.knownIdentities[id]?.nickname ?? "Player"
+            let nickname = lobby?.player(id)?.nickname ?? session.knownIdentities[id]?.nickname ?? session.player(for: id)?.nickname ?? "Player"
             startAwayTimer(for: PeerIdentity(id: id, nickname: nickname))
         }
         Task { [weak self] in
@@ -905,7 +905,7 @@ final class GameCoordinator {
     /// Advertises the lobby to every connected peer who isn't already in it.
     private func broadcastOffer() {
         guard let lobby, isHost, lobby.phase == .lobby else { return }
-        let outsiders = session.connectedIdentities.map(\.id).filter { lobby.player($0) == nil }
+        let outsiders = session.nearbyPlayers.map(\.id).filter { lobby.player($0) == nil }
         guard !outsiders.isEmpty else { return }
         session.send(.lobbyOffer(offerPayload(for: lobby, invitedPlayerId: nil)), sessionId: lobby.id, to: outsiders)
     }
@@ -1081,7 +1081,7 @@ final class GameCoordinator {
             if isHost { broadcastOffer() }
         } else if wasLobby, wasHost || isHost {
             // Started or over: take it off nearby friends' lists.
-            withdrawOffer(from: session.connectedIdentities.map(\.id))
+            withdrawOffer(from: session.nearbyPlayers.map(\.id))
         }
     }
 

@@ -864,11 +864,11 @@ struct MeshNetworkTests {
         ana.games.startGame()
         ana.games.play(.ticTacToe(cell: 4))
         #expect(cal.games.snapshot == ana.games.snapshot)
-        #expect(ben.games.offers(for: .ticTacToe).isEmpty)
-
-        // Everything Ben carried was sealed: he couldn't open a single private packet.
+        // Open games are advertised to everyone nearby, so Ben may see the offer (and its
+        // withdrawal once the game starts). Everything private stays sealed: he can't open the
+        // chat, the join, the moves or the board.
         let readableByBen = network.log.filter { $0.to == "Ben" }.map(\.envelope.kind)
-        #expect(Set(readableByBen).isSubset(of: [.hello, .announce]))
+        #expect(Set(readableByBen).isSubset(of: [.hello, .announce, .lobbyOffer, .leave]))
     }
 
     @Test("More than eight phones can all reach each other")

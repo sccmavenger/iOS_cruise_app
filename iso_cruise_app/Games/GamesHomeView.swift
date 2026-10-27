@@ -8,13 +8,14 @@ struct GamesHomeView: View {
     @Environment(OnlineStatus.self) private var online
     @State private var selectedGame: GameType?
     @State private var isJoiningByCode = false
+    @State private var showProfile = false
 
     var body: some View {
         @Bindable var games = games
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    HostingModeBanner(isEmpty: session.connectedIdentities.isEmpty)
+                    HostingModeBanner(isEmpty: session.nearbyPlayers.isEmpty)
                     if online.canPlayOnline {
                         Button {
                             isJoiningByCode = true
@@ -48,6 +49,12 @@ struct GamesHomeView: View {
                 }
             }
             .navigationTitle("Games")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Profile", systemImage: "person.crop.circle") { showProfile = true }
+                }
+            }
+            .sheet(isPresented: $showProfile) { ProfileView() }
             .sheet(item: $selectedGame) { game in
                 GameDetailSheet(game: game)
             }
@@ -57,6 +64,7 @@ struct GamesHomeView: View {
             .onChange(of: app.sheetDismissals) {
                 selectedGame = nil
                 isJoiningByCode = false
+                showProfile = false
             }
             .alert(
                 games.notice ?? "",
@@ -125,13 +133,13 @@ struct GameDetailSheet: View {
                 } footer: {
                     Text(online.canPlayOnline
                          ? "Hosted online, so it keeps going even if your phone drops out. You get a code to share with anyone, anywhere, and nearby friends see it too."
-                         : "Hosted on your phone. Nearby connected players will see your game and can join. You can also invite someone directly from the lobby.")
+                         : "Hosted on your phone. Anyone nearby with CruiseLAN open sees your game and can join.")
                 }
 
                 Section("Open games nearby") {
                     let offers = games.offers(for: game)
                     if offers.isEmpty {
-                        Text(session.connectedIdentities.isEmpty ? "Connect to people first to see their games." : "No open games right now.")
+                        Text(session.nearbyPlayers.isEmpty ? "Nobody nearby has CruiseLAN open right now." : "No open games nearby right now. Host one and they'll see it.")
                             .foregroundStyle(.secondary)
                     }
                     ForEach(offers) { offer in
@@ -179,7 +187,7 @@ struct GameDetailSheet: View {
 
 /// Says who will host a new game right now, since that decides who can join.
 struct HostingModeBanner: View {
-    /// Nobody is connected nearby.
+    /// Nobody nearby has CruiseLAN open.
     let isEmpty: Bool
     @Environment(OnlineStatus.self) private var online
 
@@ -200,9 +208,9 @@ struct HostingModeBanner: View {
         if online.isEnabled, online.state == .checking {
             return "Checking your internet connection…"
         }
-        let nearby = isEmpty ? " Connect to someone in the Chat tab's People list to play together." : ""
+        let nearby = isEmpty ? " Nobody nearby has CruiseLAN open yet." : ""
         return online.isEnabled
-            ? "No internet: games are hosted on a phone, so players need to be connected nearby.\(nearby)"
+            ? "No internet: games are hosted on a phone. Anyone nearby with CruiseLAN can join.\(nearby)"
             : "Online games are off in Profile: games are hosted on a phone nearby.\(nearby)"
     }
 

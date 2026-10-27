@@ -9,7 +9,7 @@ final class AppState {
         case chat, games
     }
 
-    var selectedTab: Tab = .chat
+    var selectedTab: Tab = .games
     /// The match is tucked into the "Back to game" bar so the player can chat meanwhile.
     var isMatchMinimized = false
     /// Navigation inside the Chat tab: the open conversation, if any.

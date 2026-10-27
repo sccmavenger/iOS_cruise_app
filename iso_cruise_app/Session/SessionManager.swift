@@ -159,6 +159,13 @@ final class SessionManager {
     private(set) var knownIdentities: [String: PeerIdentity] = [:]
     /// Contacts heard from recently: "connected".
     private(set) var reachableIds: Set<String> = []
+    /// Everyone who can play right now: reachable contacts, plus anyone running CruiseLAN who
+    /// was heard nearby recently and isn't blocked. Only game traffic uses this; chat and
+    /// everything else stay between contacts.
+    private(set) var playerIds: Set<String> = []
+    /// Names of current players who aren't contacts, kept so a drop can still be reported after
+    /// the directory forgets them.
+    @ObservationIgnored private var playerNames: [String: String] = [:]
     /// Contact requests waiting for this user's answer.
     private(set) var invitations: [Invitation] = []
     /// Contact requests this user sent, by id, with when they were sent.
@@ -294,6 +301,21 @@ final class SessionManager {
 
     func isContact(_ identityId: String) -> Bool {
         knownIdentities[identityId] != nil
+    }
+
+    /// People nearby who can play together, contacts or not.
+    var nearbyPlayers: [PeerIdentity] {
+        playerIds.compactMap(player(for:)).sorted { $0.nickname < $1.nickname }
+    }
+
+    /// Someone who can play right now, by id: a contact, or anyone heard nearby.
+    func player(for id: String) -> PeerIdentity? {
+        guard playerIds.contains(id) else { return nil }
+        return knownIdentities[id] ?? directory[id].map { PeerIdentity(id: id, nickname: $0.nickname) }
+    }
+
+    func isPlayerReachable(_ identityId: String) -> Bool {
+        playerIds.contains(identityId)
     }
 
     /// Contacts who aren't reachable right now (away).
@@ -478,6 +500,11 @@ final class SessionManager {
             droppedAt[id] = now()
             if let identity = knownIdentities[id] { onPeerDisconnected?(identity, .localSuspend) }
         }
+        // Players who aren't contacts drop the same way, so a game with them pauses quietly.
+        let lostPlayers = playerIds.filter { !isContact($0) }.compactMap { id in playerNames[id].map { PeerIdentity(id: id, nickname: $0) } }
+        playerIds = []
+        playerNames = [:]
+        for identity in lostPlayers { onPeerDisconnected?(identity, .localSuspend) }
         stop()
     }
 
@@ -748,7 +775,10 @@ final class SessionManager {
     /// ids; `nil` means every connected contact. Only connected contacts are sent to.
     @discardableResult
     func send(_ payload: Envelope.Payload, sessionId: UUID? = nil, to recipients: [String]? = nil, id: UUID? = nil) -> Envelope? {
-        let ids = (recipients.map(Set.init) ?? reachableIds).filter { reachableIds.contains($0) || payload.kind == .contactEnd }
+        let isGame = Envelope.gameKinds.contains(payload.kind)
+        let ids = (recipients.map(Set.init) ?? reachableIds).filter {
+            reachableIds.contains($0) || payload.kind == .contactEnd || (isGame && playerIds.contains($0))
+        }
         let targets = ids.compactMap { id in directory[id].map { (id: id, agreementKey: $0.agreementKey) } }
         guard !targets.isEmpty else { return nil }
         var envelope = makeEnvelope(payload, sessionId: sessionId)
@@ -864,6 +894,7 @@ final class SessionManager {
                 if let heard = directory[id]?.lastHeard, heard > cutoff { next.insert(id) }
             }
         }
+        refreshPlayers(contacts: next, cutoff: cutoff)
         let lost = reachableIds.subtracting(next)
         let gained = next.subtracting(reachableIds)
         guard !lost.isEmpty || !gained.isEmpty else { return }
@@ -1028,12 +1059,12 @@ final class SessionManager {
             linkArrivals[key] = nil
             link.identityId = nil
             links[key] = link
-            // Any contact may have been reached through this link. With no links left, nobody
+            // Any contact or player may have been reached through this link. With no links left, nobody
             // can be reached: they're all gone now. Otherwise each gets a moment to show they're
             // still reachable another way: we ask, and they answer with an announcement.
             let otherLinks = links.values.contains { $0.key != key && $0.connection == .connected }
             let graceStart = now().addingTimeInterval(-(Self.reachableWindow - (otherLinks ? Self.dropGrace : 0)))
-            for id in reachableIds {
+            for id in reachableIds.union(playerIds) {
                 if var person = directory[id], person.lastHeard > graceStart {
                     person.lastHeard = graceStart
                     directory[id] = person
@@ -1205,9 +1236,38 @@ final class SessionManager {
         }
     }
 
+    /// Recomputes who can play. Contacts are reported through the contact path; players who
+    /// aren't contacts are reported here, so a game with them notices drops and returns too.
+    private func refreshPlayers(contacts: Set<String>, cutoff: Date) {
+        var next = contacts
+        if transportRunning {
+            for (id, person) in directory where person.lastHeard > cutoff && id != localId
+                && !isContact(id) && !safety.isBlocked(identityId: id) {
+                next.insert(id)
+            }
+        }
+        let previous = playerIds
+        guard next != previous else { return }
+        let lost = previous.subtracting(next).filter { !isContact($0) }
+            .compactMap { id in playerNames.removeValue(forKey: id).map { PeerIdentity(id: id, nickname: $0) } }
+        playerIds = next
+        let gained = next.subtracting(previous).filter { !isContact($0) }.compactMap(player(for:))
+        for identity in gained { playerNames[identity.id] = identity.nickname }
+        for identity in lost.sorted(by: { $0.id < $1.id }) { onPeerDisconnected?(identity, .connectionLost) }
+        for identity in gained.sorted(by: { $0.id < $1.id }) { onPeerIdentified?(identity) }
+    }
+
     /// Handles a sealed envelope addressed to this phone.
     private func route(_ envelope: Envelope, in packet: MeshPacket) {
         let origin = packet.origin
+        // Game traffic from someone nearby who isn't a contact: allowed, games only.
+        if Envelope.gameKinds.contains(envelope.kind), !isContact(origin) {
+            guard !safety.isBlocked(identityId: origin) else { return reject("blocked player") }
+            refreshReachability()
+            guard let player = player(for: origin) else { return reject("unknown player") }
+            onGameEnvelope?(envelope, player)
+            return
+        }
         switch envelope.payload {
         case .contactRequest(let contact):
             receiveContactRequest(from: origin, nickname: contact.nickname, packet: packet)

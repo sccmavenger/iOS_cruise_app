@@ -33,7 +33,9 @@ struct OnboardingView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Welcome to CruiseLAN")
                         .font(.largeTitle.bold())
-                    Text("Chat and play games with people nearby — no internet needed.")
+                    Text(AppFeatures.chatEnabled
+                         ? "Chat and play games with people nearby — no internet needed."
+                         : "Play games with anyone: online with internet, or with people nearby without it.")
                         .font(.title3)
                         .foregroundStyle(.secondary)
                 }

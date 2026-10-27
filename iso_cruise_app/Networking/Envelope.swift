@@ -66,6 +66,13 @@ nonisolated struct Envelope: Equatable, Sendable {
         case contactEnd
     }
 
+    /// Game traffic. Unlike chat, it may go to and come from anyone nearby running CruiseLAN,
+    /// not only contacts, so a game can be hosted and joined without connecting first.
+    nonisolated static let gameKinds: Set<Kind> = [
+        .lobbyOffer, .joinRequest, .joinAccept, .joinReject, .ready, .startGame,
+        .moveRequest, .stateSnapshot, .gameEvent, .rematchRequest, .leave,
+    ]
+
     enum Payload: Equatable, Sendable {
         case hello(HelloPayload)
         case chat(ChatPayload)
