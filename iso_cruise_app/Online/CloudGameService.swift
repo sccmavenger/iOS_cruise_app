@@ -13,6 +13,8 @@ protocol CloudGameService: AnyObject {
     /// A seat in the open game that's waited longest, or a new open game if there's none.
     /// `avoid`: codes of games not to join (ones this player was removed from).
     func quickPlay(_ game: GameType, nickname: String, avoid: [String]) async throws(CloudError) -> CloudSeat
+    /// Gives up the seat over HTTPS (works while the socket is down). Best effort.
+    func leaveRoom(_ seat: CloudSeat) async
     /// Opens the room's live connection. It reconnects by itself until closed.
     func openRoom(_ seat: CloudSeat, onEvent: @escaping (CloudRoomEvent) -> Void) -> any CloudRoomConnection
 }
@@ -89,6 +91,13 @@ final class LiveCloudGameService: CloudGameService {
         let cleaned = code.uppercased().filter { $0.isLetter || $0.isNumber }
         guard cleaned.count == 8 else { throw .notFound }
         return try await post("v1/rooms/\(cleaned)/join", body: ["nickname": nickname])
+    }
+
+    func leaveRoom(_ seat: CloudSeat) async {
+        var request = URLRequest(url: baseURL.appending(path: "v1/rooms/\(seat.code)/leave"))
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(seat.token)", forHTTPHeaderField: "Authorization")
+        _ = try? await session.data(for: request)
     }
 
     func openRoom(_ seat: CloudSeat, onEvent: @escaping (CloudRoomEvent) -> Void) -> any CloudRoomConnection {
@@ -247,7 +256,9 @@ final class WebSocketRoomConnection: CloudRoomConnection {
         // The server refused the seat (401/404/410) or closed the room (4404) or our seat (4000).
         let status = (task?.response as? HTTPURLResponse)?.statusCode
         let closeCode = task?.closeCode.rawValue ?? 0
-        if closeCode == 4001 {
+        // The server answers a removed seat's reconnect with 403; iOS can't read custom close
+        // codes, so the close code is only a bonus.
+        if closeCode == 4001 || status == 403 {
             close()
             onEvent(.removed)
             return

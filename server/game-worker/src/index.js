@@ -6,6 +6,8 @@
 //   POST /v1/rooms        { game, nickname, open? }  → { code, seat, token, game, maxSeats }
 //        open: true lists the game for everyone (default false, private: code only)
 //   POST /v1/rooms/:code/join { nickname }    → same
+//   POST /v1/rooms/:code/leave  (Authorization: Bearer <token>) → gives up the seat; works even
+//        when the socket is down, so leaving is never lost
 //   GET  /v1/lobbies[?game=]              → { lobbies: [{ code, game, host, seats, maxSeats }] } (open games)
 //   POST /v1/quickplay    { game, nickname, avoid? } → seat in the longest-waiting open game, or a new one
 //   GET  /v1/rooms/:code/info             → { game, host, seats, maxSeats, phase } for invite pages
@@ -192,6 +194,9 @@ export default {
       }
       if (request.method === "GET" && parts[3] === "socket") return room.fetch(new Request("https://room/socket", request));
       if (request.method === "GET" && parts[3] === "info") return room.fetch("https://room/info");
+      if (request.method === "POST" && parts[3] === "leave") {
+        return room.fetch("https://room/leave", { method: "POST", headers: { Authorization: request.headers.get("Authorization") ?? "" } });
+      }
     }
     return json({ error: "notFound" }, 404);
   },
@@ -202,33 +207,61 @@ export class Room extends DurableObject {
     super(ctx, env);
     this.sql = ctx.storage.sql;
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+    // Rooms created before a column existed get it here (fails harmlessly on a fresh object).
+    try { this.sql.exec("ALTER TABLE room ADD COLUMN open INTEGER NOT NULL DEFAULT 0"); } catch {}
+    try { this.sql.exec("ALTER TABLE seats ADD COLUMN removed INTEGER NOT NULL DEFAULT 0"); } catch {}
+  }
+
+  /**
+   * Tables are made only when a room is really created, so looking up a code that doesn't
+   * exist (a typo, a guess, an expired invite) stores nothing.
+   */
+  createSchema() {
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS room (
         id INTEGER PRIMARY KEY CHECK (id = 1), code TEXT NOT NULL, game TEXT NOT NULL, phase TEXT NOT NULL,
         min_seats INTEGER NOT NULL, max_seats INTEGER NOT NULL, organizer TEXT NOT NULL, ended_message TEXT,
-        turn_revision INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+        turn_revision INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+        open INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS seats (
         seat TEXT PRIMARY KEY, idx INTEGER NOT NULL, nickname TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
-        active INTEGER NOT NULL DEFAULT 1, rematch INTEGER NOT NULL DEFAULT 0);
+        active INTEGER NOT NULL DEFAULT 1, rematch INTEGER NOT NULL DEFAULT 0, removed INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL, revision INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS moves (move_id TEXT PRIMARY KEY, seat TEXT NOT NULL, revision INTEGER NOT NULL, outcome TEXT NOT NULL, at INTEGER NOT NULL);
     `);
-    // Added after launch: rooms from before it are private.
-    try { this.sql.exec("ALTER TABLE room ADD COLUMN open INTEGER NOT NULL DEFAULT 0"); } catch {}
   }
 
   // MARK: storage helpers
 
-  room() { return this.sql.exec("SELECT * FROM room WHERE id = 1").toArray()[0]; }
+  room() {
+    try { return this.sql.exec("SELECT * FROM room WHERE id = 1").toArray()[0]; } catch { return undefined; } // no tables: no room
+  }
   activeSeats() { return this.sql.exec("SELECT seat, idx, nickname, rematch FROM seats WHERE active = 1 ORDER BY idx").toArray(); }
   current() { return this.sql.exec("SELECT json, revision FROM state WHERE id = 1").toArray()[0]; }
   nickname(seat) { return this.sql.exec("SELECT nickname FROM seats WHERE seat = ?", seat).toArray()[0]?.nickname ?? "A player"; }
 
-  async addSeat(nickname) {
+  /** A new seat secret and its hash. Done first, because awaiting lets other requests in. */
+  async newToken() {
+    const token = randomHex(32);
+    return { token, hash: await sha256(token) };
+  }
+
+  /** Synchronous, so a capacity check just before it can't be raced by another join. */
+  insertSeat(nickname, hash) {
     const next = this.sql.exec("SELECT COALESCE(MAX(idx) + 1, 0) AS n FROM seats").one().n;
-    const seat = `seat${next}`, token = randomHex(32);
-    this.sql.exec("INSERT INTO seats (seat, idx, nickname, token_hash) VALUES (?, ?, ?, ?)", seat, next, cleanNickname(nickname), await sha256(token));
-    return { seat, token };
+    const seat = `seat${next}`;
+    this.sql.exec("INSERT INTO seats (seat, idx, nickname, token_hash) VALUES (?, ?, ?, ?)", seat, next, cleanNickname(nickname), hash);
+    return seat;
+  }
+
+  /** A room that was never created, or has expired. */
+  notFound() {
+    return json({ error: "notFound" }, 404);
+  }
+
+  async seatFor(request) {
+    const token = (request.headers.get("Authorization") ?? "").replace(/^Bearer /, "");
+    return this.sql.exec("SELECT seat, active, removed FROM seats WHERE token_hash = ?", await sha256(token)).toArray()[0];
   }
 
   /** Records activity and moves the expiry alarm to match the room's phase. */
@@ -246,39 +279,44 @@ export class Room extends DurableObject {
     if (path === "/create") {
       if (this.room()) return json({ error: "codeTaken" }, 409);
       const { code, game, nickname, open } = await request.json();
+      const { token, hash } = await this.newToken();
+      if (this.room()) return json({ error: "codeTaken" }, 409);
+      this.createSchema();
       const now = Date.now();
       this.sql.exec("INSERT INTO room (id, code, game, phase, min_seats, max_seats, organizer, created_at, updated_at, open) VALUES (1, ?, ?, 'lobby', ?, ?, 'seat0', ?, ?, ?)",
         code, game, GAMES[game].min, GAMES[game].max, now, now, open ? 1 : 0);
-      const { seat, token } = await this.addSeat(nickname);
+      const seat = this.insertSeat(nickname, hash);
       await this.touch();
       await this.syncDirectory();
       return json({ code, seat, token, game, maxSeats: GAMES[game].max });
     }
     if (path === "/join") {
+      const { nickname } = await request.json();
+      const { token, hash } = await this.newToken();
+      // From here to the insert nothing awaits, so two joins for the last seat can't both win.
       const room = this.room();
-      if (!room) return json({ error: "notFound" }, 404);
+      if (!room) return this.notFound();
       if (room.phase !== "lobby") return json({ error: "alreadyStarted" }, 409);
       if (this.activeSeats().length >= room.max_seats) return json({ error: "full" }, 409);
-      const { nickname } = await request.json();
-      const { seat, token } = await this.addSeat(nickname);
+      const seat = this.insertSeat(nickname, hash);
       this.broadcastRoster();
       await this.syncDirectory();
       return json({ code: room.code, seat, token, game: room.game, maxSeats: room.max_seats });
     }
     if (path === "/info") {
       const room = this.room();
-      if (!room) return json({ error: "notFound" }, 404);
+      if (!room) return this.notFound();
       const seats = this.activeSeats();
       const host = seats.find((s) => s.seat === room.organizer)?.nickname ?? "Someone";
       return json({ game: room.game, host, seats: seats.length, maxSeats: room.max_seats, phase: room.phase });
     }
     if (path === "/socket") {
       if (request.headers.get("Upgrade") !== "websocket") return json({ error: "expectedWebSocket" }, 426);
-      const room = this.room();
-      if (!room) return json({ error: "notFound" }, 404);
-      const token = (request.headers.get("Authorization") ?? "").replace(/^Bearer /, "");
-      const row = this.sql.exec("SELECT seat, active FROM seats WHERE token_hash = ?", await sha256(token)).toArray()[0];
+      if (!this.room()) return this.notFound();
+      const row = await this.seatFor(request);
       if (!row) return json({ error: "badToken" }, 401);
+      // 403 rather than a WebSocket close code: iOS can't read custom close codes.
+      if (row.removed) return json({ error: "removed" }, 403);
       if (!row.active) return json({ error: "left" }, 410);
       const pair = new WebSocketPair();
       // Hibernation API: the room sleeps between moves and keeps the sockets; the tag is the seat.
@@ -286,6 +324,13 @@ export class Room extends DurableObject {
       pair[1].serializeAttachment({ lastSeen: Date.now() });
       this.broadcastRoster();
       return new Response(null, { status: 101, webSocket: pair[0] });
+    }
+    if (path === "/leave") {
+      if (!this.room()) return this.notFound();
+      const row = await this.seatFor(request);
+      if (!row) return json({ error: "badToken" }, 401);
+      if (row.active) await this.leave(row.seat);
+      return json({ ok: true });
     }
     return json({ error: "notFound" }, 404);
   }
@@ -472,7 +517,7 @@ export class Room extends DurableObject {
     if (room.phase !== "lobby" || seat !== room.organizer || target === seat || typeof target !== "string") {
       return this.send(ws, { type: "error", error: "notAllowed" });
     }
-    const written = this.sql.exec("UPDATE seats SET active = 0 WHERE seat = ? AND active = 1", target).rowsWritten;
+    const written = this.sql.exec("UPDATE seats SET active = 0, removed = 1 WHERE seat = ? AND active = 1", target).rowsWritten;
     if (written !== 1) return;
     await this.touch();
     await this.syncDirectory();

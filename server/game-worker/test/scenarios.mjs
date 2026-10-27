@@ -277,7 +277,7 @@ async function openGames() {
   await sleep(300);
   check("The host removes a player: their seat is gone and their socket closes as removed", roster.players.every((p) => p.seat !== cat.seat) && cat.closed === 4001, `close code ${cat.closed}`);
   const back = await new Player(cat, "Cat").connect().then(() => "connected", (e) => e.message);
-  check("A removed seat can't reconnect", back === "HTTP 410", back);
+  check("A removed seat can't reconnect (403: removed)", back === "HTTP 403", back);
   ann.send({ type: "start" });
   await Promise.all([ann, bob].map((p) => p.seen(0)));
   players.forEach((p) => p.ws.readyState === 1 && p.close());
@@ -306,6 +306,43 @@ async function inviteLinks() {
   await sleep(300);
 }
 
+async function robustness() {
+  // Many people tap the last seat at once: exactly one gets it.
+  const created = await api("/v1/rooms", { game: "ticTacToe", nickname: "Ann" });
+  const racers = await Promise.all(Array.from({ length: 8 }, (_, i) => api(`/v1/rooms/${created.code}/join`, { nickname: `R${i}` })));
+  const winners = racers.filter((r) => r.status === 200);
+  check("Eight simultaneous joins for the last seat: exactly one gets it", winners.length === 1 && racers.filter((r) => r.error === "full").length === 7,
+    racers.map((r) => r.status).join(","));
+  const roster = await api(`/v1/rooms/${created.code}/info`);
+  check("…and the room has exactly two seats", roster.seats === 2);
+
+  // A removed player's app learns it from the HTTP status (iOS can't read custom close codes).
+  const players = await room("colorMatch", 3);
+  players[0].send({ type: "kick", seat: players[2].seat });
+  await players[0].waitFor((m) => m.type === "roster" && m.players.length === 2);
+  const again = await new Player(players[2], "Cat").connect().then(() => "connected", (e) => e.message);
+  check("A removed seat reconnecting gets 403 (removed), not 410 (left)", again === "HTTP 403", again);
+
+  // Leaving over HTTP works even with the socket down, and ends a game in progress.
+  players[0].send({ type: "start" });
+  await Promise.all(players.slice(0, 2).map((p) => p.seen(0)));
+  players[1].ws.terminate();
+  const left = await fetch(`${BASE}/v1/rooms/${players[1].code}/leave`, { method: "POST", headers: { Authorization: `Bearer ${players[1].token}` } });
+  const ended = await players[0].waitFor((m) => m.type === "roster" && m.phase === "ended");
+  check("Leaving over HTTP (socket down) ends the game for the others", left.status === 200 && /left the game/.test(ended.endedMessage), ended.endedMessage);
+  const badLeave = await fetch(`${BASE}/v1/rooms/${players[1].code}/leave`, { method: "POST", headers: { Authorization: "Bearer nope" } });
+  check("Leaving needs the seat's token", badLeave.status === 401);
+  players.forEach((p) => p.ws.readyState === 1 && p.close());
+
+  // Probing codes that don't exist.
+  const probe = await api("/v1/rooms/QQQQ2222/info");
+  const probeAgain = await api("/v1/rooms/QQQQ2222/info");
+  check("Unknown codes stay unknown on repeat lookups", probe.status === 404 && probeAgain.status === 404);
+  const host = await new Player(created, "Ann").connect();
+  host.send({ type: "leave" });
+  await sleep(200);
+}
+
 /** Slow (80 s): a phone that goes silent without closing shows as away; one that pings doesn't. */
 async function presence() {
   const [silent, pinger] = await room("ticTacToe", 2);
@@ -322,7 +359,7 @@ async function presence() {
 
 const phase = process.argv[2] ?? "all";
 try {
-  if (phase === "all") { await basics(); await lobbyHandover(); await turnIndependent(); await hiddenCards(); await openGames(); await inviteLinks(); }
+  if (phase === "all") { await basics(); await lobbyHandover(); await turnIndependent(); await hiddenCards(); await openGames(); await inviteLinks(); await robustness(); }
   if (phase === "restart1") await restart1();
   if (phase === "restart2") await restart2();
   if (phase === "presence") await presence();

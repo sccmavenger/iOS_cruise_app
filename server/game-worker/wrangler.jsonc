@@ -15,10 +15,11 @@
     { "tag": "v2", "new_sqlite_classes": ["LobbyDirectory"] }
   ],
   "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
-  // Per-address limits: creating rooms, and guessing invite codes.
+  // Per-address limits: creating rooms, and guessing invite codes. Generous, because a whole
+  // ship or hotel can share one public address; codes are 40-bit, so guessing stays hopeless.
   "ratelimits": [
-    { "name": "CREATE_LIMITER", "namespace_id": "4101", "simple": { "limit": 20, "period": 60 } },
-    { "name": "JOIN_LIMITER", "namespace_id": "4102", "simple": { "limit": 30, "period": 60 } }
+    { "name": "CREATE_LIMITER", "namespace_id": "4101", "simple": { "limit": 60, "period": 60 } },
+    { "name": "JOIN_LIMITER", "namespace_id": "4102", "simple": { "limit": 120, "period": 60 } }
   ],
   "observability": { "enabled": true }
 }

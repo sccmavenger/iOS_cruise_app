@@ -508,6 +508,10 @@ final class GameCoordinator {
         switch offer.invitedPlayerId {
         case nil:
             offers[offer.lobbyId] = named
+        case localId? where !session.isContact(identity.id):
+            // From someone nearby who isn't a contact: it shows in the list, but never pops up,
+            // so a crowd of strangers can't flood anyone with invitations.
+            offers[offer.lobbyId] = named
         case localId?:
             offers[offer.lobbyId] = named
             // A host whose invitation was just declined can't keep popping it up.
@@ -1016,7 +1020,8 @@ final class GameCoordinator {
 
     /// After a relaunch, goes back to the online game this phone was in.
     func restoreOnlineGame() {
-        guard lobby == nil, cloud != nil, let seat = cloudStore?.load() else { return }
+        // An invite link may already be joining another game; that one wins.
+        guard lobby == nil, !isConnectingOnline, joiningLobbyId == nil, cloud != nil, let seat = cloudStore?.load() else { return }
         enterCloudRoom(seat)
     }
 
@@ -1053,6 +1058,8 @@ final class GameCoordinator {
             return
         }
         if tellServer {
+            // Over HTTPS too, so leaving isn't lost when the socket is down or reconnecting.
+            if let seat = cloudSeat, let cloud { Task { await cloud.leaveRoom(seat) } }
             connection.send(.leave)
             // Give the message a moment to go out before the socket closes.
             Task {
@@ -1175,8 +1182,9 @@ final class GameCoordinator {
         let previous = snapshot
         snapshot = view
         revision = newRevision
-        pendingMoveId = nil
-        pendingCloudMove = nil
+        // A pending move stays pending until its own result arrives: someone else's move (say a
+        // Call One! racing ours) mustn't clear it, or a refusal would go unexplained and the
+        // move wouldn't be resent after a reconnect.
         if previous?.isFinished == true, !view.isFinished { rematchVotes = [] }
         // The first state after joining or a relaunch isn't news: the game screen is opening
         // anyway, so it doesn't announce "your turn" (that arrived as a banner on top of it).

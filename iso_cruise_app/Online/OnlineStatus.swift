@@ -26,6 +26,10 @@ final class OnlineStatus {
     @ObservationIgnored private let settings: ConnectionSettings
     @ObservationIgnored private var monitor: NWPathMonitor?
     @ObservationIgnored private var checkTask: Task<Void, Never>?
+    @ObservationIgnored private var lastChecked: Date = .distantPast
+    @ObservationIgnored private var pathIsUp = false
+    /// How long an answer is trusted before hosting asks again.
+    static let freshness: TimeInterval = 30
 
     init(service: CloudGameService, settings: ConnectionSettings) {
         self.service = service
@@ -52,16 +56,22 @@ final class OnlineStatus {
             let healthy = await self.service.checkHealth()
             guard !Task.isCancelled else { return }
             self.state = healthy ? .online : .offline
+            self.lastChecked = .now
         }
     }
 
     /// The answer, waiting for a check already in progress.
     func currentlyOnline() async -> Bool {
-        if state == .checking || checkTask != nil { await checkTask?.value }
+        guard isEnabled else { return false }
+        // No answer yet, or an old one with a network up (the service may have come back, or
+        // gone): ask now rather than host in the wrong place.
+        if checkTask == nil || (pathIsUp && Date.now.timeIntervalSince(lastChecked) > Self.freshness) { refresh() }
+        await checkTask?.value
         return canPlayOnline
     }
 
     private func pathChanged(isUp: Bool) {
+        pathIsUp = isUp
         if isUp {
             state = .checking
             refresh()

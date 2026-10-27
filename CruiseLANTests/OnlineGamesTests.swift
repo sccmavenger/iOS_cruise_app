@@ -13,6 +13,11 @@ final class FakeCloudService: CloudGameService {
     private(set) var joinedCodes: [String] = []
     private(set) var quickPlays: [(GameType, [String])] = []
     var listed: [OpenGame] = []
+    private(set) var leftOverHTTP: [String] = []
+    /// Lets a test hold a join "in flight".
+    var joinDelay: Duration = .zero
+
+    func leaveRoom(_ seat: CloudSeat) async { leftOverHTTP.append(seat.code) }
     private(set) var connections: [FakeRoomConnection] = []
 
     func checkHealth() async -> Bool { online }
@@ -32,6 +37,7 @@ final class FakeCloudService: CloudGameService {
 
     func joinRoom(code: String, nickname: String) async throws(CloudError) -> CloudSeat {
         joinedCodes.append(code)
+        if joinDelay != .zero { try? await Task.sleep(for: joinDelay) }
         return try joinResult.get()
     }
 
@@ -211,6 +217,7 @@ struct OnlineGamesTests {
         let pending = try #require(s.games.pendingMoveId)
         connection.connect()
         #expect(connection.moves.map(\.moveId) == [pending])
+        connection.deliver(.result(CloudMoveResult(moveId: pending.uuidString, ok: true, revision: 1)))
         connection.deliver(Self.snapshot(1, board: [nil, nil, nil, nil, .x, nil, nil, nil, nil]))
         #expect(s.games.pendingMoveId == nil)
         #expect(s.games.revision == 1)
@@ -420,5 +427,50 @@ struct OnlineGamesTests {
         let list = OpenGamesList(service: cloud)
         await list.refresh()
         #expect(list.games(for: .ticTacToe, excluding: ["DDDD4444"]).map(\.code) == ["AAAA1111"])
+    }
+
+    @Test("Someone else's move doesn't clear my pending one; its refusal still shows")
+    func pendingSurvivesOtherSnapshots() async throws {
+        let s = Setup()
+        s.games.hostLobby(.ticTacToe)
+        await settle { s.games.lobby != nil }
+        let connection = try #require(s.cloud.connections.first)
+        connection.connect()
+        connection.deliver(Self.roster(phase: .playing))
+        connection.deliver(Self.snapshot(0))
+        s.games.play(.ticTacToe(cell: 4))
+        let move = try #require(connection.moves.first)
+        connection.deliver(Self.snapshot(1, board: [.o, nil, nil, nil, nil, nil, nil, nil, nil]))
+        #expect(s.games.pendingMoveId == move.moveId, "still waiting for our own answer")
+        connection.drop()
+        connection.connect()
+        #expect(connection.moves.filter { $0.moveId == move.moveId }.count == 2, "resent after the reconnect")
+        connection.deliver(.result(CloudMoveResult(moveId: move.moveId.uuidString, ok: false, revision: 1, error: "notYourTurn", message: "It's not your turn.")))
+        #expect(s.games.notice == "It's not your turn.")
+        #expect(s.games.pendingMoveId == nil)
+        s.store.clear()
+    }
+
+    @Test("Leaving also tells the service over HTTPS, so it isn't lost with a dead socket")
+    func leaveOverHTTP() async throws {
+        let s = Setup()
+        s.games.hostLobby(.ticTacToe)
+        await settle { s.games.lobby != nil }
+        s.games.leave()
+        await settle { !s.cloud.leftOverHTTP.isEmpty }
+        #expect(s.cloud.leftOverHTTP == ["ABCD1234"])
+    }
+
+    @Test("A relaunch restore doesn't override an invite link that's already joining")
+    func restoreYieldsToInvite() async throws {
+        let s = Setup()
+        s.store.save(CloudSeat(code: "OLDD1111", seat: "seat0", token: "t", game: .chess, maxSeats: 2))
+        s.cloud.joinDelay = .milliseconds(50)
+        s.games.joinOnline(code: "ABCD1234")
+        s.games.restoreOnlineGame()
+        #expect(s.games.lobby == nil, "restore skipped while the invite join is in flight")
+        for _ in 0..<50 where s.games.lobby == nil { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(s.games.lobby?.cloudCode == "ABCD1234", "notice: \(s.games.notice ?? "none")")
+        s.store.clear()
     }
 }

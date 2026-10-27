@@ -71,12 +71,13 @@ struct OpenNearbyGamesTests {
         #expect(!guest.session.nearbyPlayers.contains { $0.id == host.id })
     }
 
-    @Test("A private game isn't shown to people nearby unless they're invited")
+    @Test("A private game isn't shown to people nearby unless they're invited; a stranger's invite never pops up")
     func privateNearby() throws {
         host.games.hostLobby(.ticTacToe, open: false)
         #expect(guest.games.offers(for: .ticTacToe).isEmpty)
         host.games.invite(try #require(host.session.player(for: guest.id)))
-        #expect(guest.games.invitation?.host.id == host.id)
+        #expect(guest.games.invitation == nil, "no pop-up from someone who isn't a contact")
+        #expect(guest.games.offers(for: .ticTacToe).first?.host.id == host.id, "it shows in their list instead")
     }
 
     @Test("The host removes a nearby player; they're told and can't rejoin")
