@@ -26,15 +26,22 @@ struct MatchContainerView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    // Tucks the game away so the player can chat while waiting for their turn.
+                    // Tucks the game away so the player can chat while waiting for their turn,
+                    // landing straight in the chat with the people at this table rather than
+                    // on the conversation list (where the default is "Everyone", which goes
+                    // to every contact — tester feedback, 2026-10-19).
                     Button {
-                        app.selectedTab = .chat
+                        if let conversation = games.matchConversation() {
+                            app.open(conversation: conversation.id)
+                        } else {
+                            app.selectedTab = .chat
+                        }
                         app.isMatchMinimized = true
                     } label: {
                         Label(session.chat.totalUnread > 0 ? "Chat (\(session.chat.totalUnread))" : "Chat", systemImage: "bubble.left.and.bubble.right")
                             .labelStyle(.titleAndIcon)
                     }
-                    .accessibilityHint("Shows the chat. The game keeps going and you can come back anytime.")
+                    .accessibilityHint("Opens the chat with the players in this game. The game keeps going and you can come back anytime.")
                 }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Leave", role: .destructive) {
@@ -233,6 +240,10 @@ struct MatchView: View {
                     CheckersView(state: state)
                 case .chess(let state):
                     ChessView(state: state)
+                case .spades(let table):
+                    SpadesView(table: table)
+                case .tonk(let table):
+                    TonkView(table: table)
                 case nil:
                     ProgressView("Waiting for the host…")
                         .padding(.top, 80)

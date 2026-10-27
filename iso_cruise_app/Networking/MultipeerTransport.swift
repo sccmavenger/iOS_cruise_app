@@ -85,6 +85,7 @@ nonisolated final class MultipeerTransport: NSObject, PeerTransport, @unchecked 
         }
 
         DebugTrace.log("transport start \(displayName)")
+        DiagnosticLog.shared.note("radio", "start: advertising and browsing \(Self.serviceType), up to \(Self.maxLinks) links")
         advertiser.startAdvertisingPeer()
         browser.startBrowsingForPeers()
         continuation.yield(.started)
@@ -125,6 +126,7 @@ nonisolated final class MultipeerTransport: NSObject, PeerTransport, @unchecked 
         previous?.delegate = nil
         previous?.disconnect()
         DebugTrace.log("transport invite \(peerID.displayName)")
+        DiagnosticLog.shared.note("radio", "inviting \(DiagnosticLog.shared.handle(peerID.displayName))")
         let context = try? JSONEncoder().encode(InvitationContext(v: Self.protocolVersion))
         browser.invitePeer(peerID, to: session, withContext: context, timeout: Self.invitationTimeout)
         return true
@@ -145,6 +147,7 @@ nonisolated final class MultipeerTransport: NSObject, PeerTransport, @unchecked 
         previous?.delegate = nil
         previous?.disconnect()
         DebugTrace.log("transport respond \(pending.peerID.displayName) accept=\(session != nil)")
+        DiagnosticLog.shared.note("radio", "answered invitation from \(DiagnosticLog.shared.handle(pending.peerID.displayName)): \(session != nil ? "accepted" : "declined")")
         pending.handler(session != nil, session)
     }
 
@@ -185,6 +188,15 @@ nonisolated final class MultipeerTransport: NSObject, PeerTransport, @unchecked 
               let data = try? NSKeyedArchiver.archivedData(withRootObject: peerID, requiringSecureCoding: true)
         else { return nil }
         return SHA256.hash(data: data).prefix(16).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// MultipeerConnectivity doesn't expose which radio a session uses, so this is all it can say.
+    func medium(for peer: PeerKey) -> LinkMedium? {
+        let connected = state.withLock { state -> Bool in
+            guard let peerID = state.peersByKey[peer], let session = state.links[peerID] else { return false }
+            return session.connectedPeers.contains(peerID)
+        }
+        return connected ? .nearbyRadio : nil
     }
 
     // MARK: - Helpers
@@ -262,6 +274,7 @@ extension MultipeerTransport: MCSessionDelegate {
             return true
         }
         DebugTrace.log("transport state \(peerID.displayName) -> \(state.rawValue) current=\(current)")
+        DiagnosticLog.shared.note("radio", "\(DiagnosticLog.shared.handle(peerID.displayName)) state \(state == .connected ? "connected" : state == .connecting ? "connecting" : "not connected")\(current ? "" : " (stale session)")")
         guard current else {
             // A session someone else's phone pulled us into, or one we replaced: don't keep it.
             if state == .connected, !isLink(session, to: peerID) { session.disconnect() }
@@ -337,6 +350,7 @@ extension MultipeerTransport: MCNearbyServiceAdvertiserDelegate {
         }
 
         DebugTrace.log("transport invitation from \(peerID.displayName)")
+        DiagnosticLog.shared.note("radio", "invitation from \(DiagnosticLog.shared.handle(peerID.displayName))")
         let name = Nickname.sanitize(peerID.displayName) ?? "Unknown"
         continuation.yield(.invitationReceived(invitationId: invitationId, from: key(for: peerID), displayName: name))
 
@@ -359,12 +373,14 @@ extension MultipeerTransport: MCNearbyServiceBrowserDelegate {
         let isLocal = state.withLock { $0.localPeer == peerID }
         guard !isLocal else { return }
         DebugTrace.log("transport found \(peerID.displayName)")
+        DiagnosticLog.shared.note("radio", "found \(DiagnosticLog.shared.handle(peerID.displayName))")
         let name = Nickname.sanitize(peerID.displayName) ?? "Unknown"
         continuation.yield(.peerFound(key(for: peerID), displayName: name))
     }
 
     func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {
         DebugTrace.log("transport lost \(peerID.displayName)")
+        DiagnosticLog.shared.note("radio", "lost \(DiagnosticLog.shared.handle(peerID.displayName))")
         continuation.yield(.peerLost(key(for: peerID)))
     }
 

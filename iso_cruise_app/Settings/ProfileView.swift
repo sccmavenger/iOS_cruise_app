@@ -6,9 +6,11 @@ import UserNotifications
 struct ProfileView: View {
     @Environment(ProfileStore.self) private var profile
     @Environment(SessionManager.self) private var session
+    @Environment(ConnectionSettings.self) private var connectionSettings
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var notificationsAllowed: Bool?
+    @State private var showConnectGuide = false
     @Environment(\.openURL) private var openURL
 
     private var nicknameProblem: String? {
@@ -41,6 +43,21 @@ struct ProfileView: View {
                 }
 
                 Section {
+                    @Bindable var connectionSettings = connectionSettings
+                    Toggle(isOn: $connectionSettings.nearbyRadioEnabled) {
+                        Label("Nearby radio", systemImage: "dot.radiowaves.left.and.right")
+                    }
+                    Label("Wi-Fi network", systemImage: "wifi")
+                        .badge(Text("Always on"))
+                } header: {
+                    Text("Connections")
+                } footer: {
+                    Text(connectionSettings.nearbyRadioEnabled
+                         ? "CruiseLAN uses both. Nearby radio connects phones a few steps apart with no shared network. The Wi-Fi network reaches across a building, but only between phones joined to the same Wi-Fi, and some hotel and ship networks block it. Turn Nearby radio off to test the Wi-Fi network on its own."
+                         : "Only the Wi-Fi network is used: you'll only see people joined to the same Wi-Fi as you. If nobody shows up, this network may block phones from seeing each other; turn Nearby radio back on. Bluetooth still reaches locked phones nearby.")
+                }
+
+                Section {
                     LabeledContent("Bluetooth", value: bluetoothStatus)
                     LabeledContent("Notifications", value: notificationsAllowed.map { $0 ? "Allowed" : "Off" } ?? "…")
                     if !isReadyForAwayMessages, let url = URL(string: UIApplication.openSettingsURLString) {
@@ -62,8 +79,21 @@ struct ProfileView: View {
 
                 Section("Privacy") {
                     TipRow(symbol: "lock.fill", text: "Messages are end-to-end encrypted: phones that pass them along can't read them.")
-                    TipRow(symbol: "icloud.slash", text: "No accounts, servers, analytics, or internet.")
+                    // Diagnostics sharing is off unless the user turns it on, so this stays
+                    // accurate either way rather than claiming "no analytics" outright.
+                    TipRow(symbol: "icloud.slash", text: "No accounts, servers, or internet. Anonymous diagnostics are only sent if you turn them on.")
                     TipRow(symbol: "trash", text: "Chats and games live only in memory and disappear when you quit.")
+                }
+
+                Section {
+                    Button("How to connect") { showConnectGuide = true }
+                    NavigationLink("Troubleshooting") { TroubleshootingView() }
+                    NavigationLink("Insights") { InsightsView() }
+                    Button("Show first-run tips again") { profile.resetGuidance() }
+                } header: {
+                    Text("Help & diagnostics")
+                } footer: {
+                    Text("Troubleshooting explains what's working and what isn't. Insights shows what CruiseLAN has measured about itself on this phone.")
                 }
 
                 Section("Good to know") {
@@ -108,6 +138,7 @@ struct ProfileView: View {
                     .disabled(!canSave)
                 }
             }
+            .sheet(isPresented: $showConnectGuide) { GetConnectedView() }
             .onAppear { name = profile.nickname ?? "" }
             .task {
                 let settings = await UNUserNotificationCenter.current().notificationSettings()

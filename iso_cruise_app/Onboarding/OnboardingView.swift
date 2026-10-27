@@ -63,7 +63,9 @@ struct OnboardingView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     FeatureRow(symbol: "wifi.slash", title: "Works offline", detail: "Connects to nearby iPhones over Wi-Fi or Bluetooth, and other phones running CruiseLAN pass messages along to reach further.")
                     FeatureRow(symbol: "lock.fill", title: "Private by design", detail: "End-to-end encrypted, no accounts, no cloud. Only people you accept can message you. Messages vanish when you quit.")
-                    FeatureRow(symbol: "gamecontroller.fill", title: "Play together", detail: "Chess, Checkers, Color Match, Connect Four, and Tic-Tac-Toe.")
+                    // Built from GameType so this can't go stale when a game is added, which
+                    // it already had once: Spades and Tonk shipped while this still listed five.
+                    FeatureRow(symbol: "gamecontroller.fill", title: "Play together", detail: Self.gameList)
                 }
 
                 Text("Next, iOS will ask about your local network, Bluetooth, and notifications. CruiseLAN uses them to find nearby people and to let you know about new messages and your turn, even while you're in another app.")
@@ -103,6 +105,13 @@ struct OnboardingView: View {
     private func save() {
         guard sanitized != nil else { return }
         profile.setNickname(name)
+    }
+
+    /// Every playable game, comma-separated with "and" before the last.
+    private static var gameList: String {
+        let names = GameType.allCases.filter(\.isPlayable).map(\.displayName)
+        guard names.count > 1 else { return names.first.map { "\($0)." } ?? "" }
+        return "\(names.dropLast().joined(separator: ", ")), and \(names[names.count - 1])."
     }
 }
 

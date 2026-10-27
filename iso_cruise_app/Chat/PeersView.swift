@@ -45,7 +45,8 @@ struct PeersView: View {
                             .foregroundStyle(.secondary)
                     }
                     ForEach(session.connectedIdentities, id: \.id) { identity in
-                        ContactRow(identity: identity, isAway: false, hops: session.directory[identity.id]?.hops)
+                        ContactRow(identity: identity, isAway: false, hops: session.directory[identity.id]?.hops,
+                                   media: session.media(for: identity.id))
                             .swipeActions {
                                 Button("Block", systemImage: "hand.raised", role: .destructive) {
                                     session.block(identityId: identity.id)
@@ -64,11 +65,17 @@ struct PeersView: View {
                     }
                 }
 
+                let media = session.linkMedia
+                if !media.isEmpty {
+                    ConnectionSummarySection(media: media)
+                }
+
                 let away = session.awayIdentityIds.compactMap { session.knownIdentities[$0] }
                 if !away.isEmpty {
                     Section {
                         ForEach(away, id: \.id) { identity in
-                            ContactRow(identity: identity, isAway: true, hops: nil)
+                            ContactRow(identity: identity, isAway: true, hops: nil,
+                                       awaySince: session.droppedAt[identity.id])
                                 .swipeActions {
                                     Button("Block", systemImage: "hand.raised", role: .destructive) {
                                         session.block(identityId: identity.id)
@@ -96,7 +103,7 @@ struct PeersView: View {
                         Button {
                             session.requestContact(person.id)
                         } label: {
-                            MeshPersonRow(person: person, isWaiting: waiting)
+                            MeshPersonRow(person: person, isWaiting: waiting, media: session.media(for: person.id))
                         }
                         .disabled(waiting)
                         .accessibilityHint("Sends a request to connect")
@@ -186,6 +193,11 @@ struct ContactRow: View {
     let identity: PeerIdentity
     let isAway: Bool
     let hops: Int?
+    /// Direct links to them right now (see `SessionManager.media(for:)`).
+    var media: [LinkMedium] = []
+    /// When they dropped, for away contacts. Shown so a long-departed friend doesn't look
+    /// like a stuck row — contacts are kept for hours on purpose, to hold messages for them.
+    var awaySince: Date?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -196,7 +208,15 @@ struct ContactRow: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(identity.labeledName)
-                if !isAway, let distance = distanceText(hops: hops) {
+                if isAway {
+                    if let awaySince, let age = MeshPersonRow.ageText(since: awaySince) {
+                        Text(age.replacingOccurrences(of: "seen ", with: "left "))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else if !media.isEmpty {
+                    MediaLabel(media: media)
+                } else if let distance = distanceText(hops: hops) {
                     Text(distance)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -220,6 +240,7 @@ struct ContactRow: View {
 struct MeshPersonRow: View {
     let person: SessionManager.MeshPerson
     let isWaiting: Bool
+    var media: [LinkMedium] = []
 
     var body: some View {
         HStack(spacing: 12) {
@@ -231,8 +252,8 @@ struct MeshPersonRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(person.labeledName)
                     .foregroundStyle(.primary)
-                if let distance = distanceText(hops: person.hops) {
-                    Text(distance)
+                if let subtitle {
+                    Text(subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -243,6 +264,89 @@ struct MeshPersonRow: View {
                 .foregroundStyle(isWaiting ? AnyShapeStyle(.secondary) : AnyShapeStyle(Theme.teal))
         }
         .accessibilityElement(children: .combine)
+    }
+
+    /// Distance plus how long ago they were last heard from.
+    ///
+    /// The age is here because of tester feedback: "I closed the app on test-phone but it's
+    /// still showing up several minutes after". Someone who leaves ages out of this list on
+    /// their own, but with no sense of *when* they were last seen there's nothing to
+    /// distinguish "here right now" from "about to disappear" — so a list that's working
+    /// correctly reads as a stuck one.
+    private var subtitle: String? {
+        let distance = media.isEmpty ? distanceText(hops: person.hops) : media.map(\.label).joined(separator: " + ")
+        let age = Self.ageText(since: person.lastHeard)
+        return [distance, age].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    /// Coarse on purpose: announcements arrive every 20s, so anything finer than this would
+    /// imply a precision the mesh doesn't have.
+    static func ageText(since lastHeard: Date) -> String? {
+        let seconds = Int(Date.now.timeIntervalSince(lastHeard))
+        guard seconds >= 0 else { return nil }
+        switch seconds {
+        case ..<25: return "seen just now"
+        case ..<60: return "seen \(seconds)s ago"
+        default: return "seen \(seconds / 60)m ago"
+        }
+    }
+}
+
+/// "Wi-Fi network + Nearby radio", with an icon per path.
+struct MediaLabel: View {
+    let media: [LinkMedium]
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(media, id: \.self) { medium in
+                Image(systemName: medium.symbol)
+                    .accessibilityHidden(true)
+            }
+            Text(media.map(\.label).joined(separator: " + "))
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+}
+
+/// Which kinds of connection are working right now, with how many phones each reaches and
+/// what each one means. Answers "am I on Bluetooth, the Wi-Fi, or what?" without guessing:
+/// it lists only what the transports report for live links.
+struct ConnectionSummarySection: View {
+    let media: [LinkMedium]
+
+    private var counts: [(medium: LinkMedium, count: Int)] {
+        Dictionary(grouping: media, by: { $0 }).map { ($0.key, $0.value.count) }.sorted { $0.medium.sortOrder < $1.medium.sortOrder }
+    }
+
+    var body: some View {
+        Section {
+            ForEach(counts, id: \.medium) { entry in
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: entry.medium.symbol)
+                        .font(.title3)
+                        .foregroundStyle(Theme.teal)
+                        .frame(width: 32)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack {
+                            Text(entry.medium.label)
+                            Spacer()
+                            Text(entry.count == 1 ? "1 phone" : "\(entry.count) phones")
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(entry.medium.detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .accessibilityElement(children: .combine)
+            }
+        } header: {
+            Text("How you're connected")
+        } footer: {
+            Text("These are this phone's direct links, to anyone running CruiseLAN nearby. People shown as \"Through 1 phone\" are reached by passing messages along those links. The same person can be linked more than one way at once; if one path drops, the other keeps working.")
+        }
     }
 }
 

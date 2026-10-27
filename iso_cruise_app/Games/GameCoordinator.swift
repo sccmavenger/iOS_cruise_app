@@ -847,6 +847,17 @@ final class GameCoordinator {
 
 extension GameCoordinator {
     /// Hidden-information snapshots must be this player's own view.
+    /// The chat for the match in progress: the people at this table, and nobody else.
+    ///
+    /// Nil when there's no lobby, or nobody else has joined yet — the caller falls back to
+    /// the conversation list. See `SessionManager.matchConversation(lobbyId:named:players:)`.
+    @discardableResult
+    func matchConversation() -> ChatStore.Conversation? {
+        guard let lobby else { return nil }
+        let players = lobby.players.map { PeerIdentity(id: $0.id, nickname: $0.nickname) }
+        return session.matchConversation(lobbyId: lobby.id, named: lobby.gameType.displayName, players: players)
+    }
+
     static func isAddressedToMe(_ snapshot: GameStateSnapshot, localId: String) -> Bool {
         if case .colorMatch(let table) = snapshot { return table.viewer == localId }
         return true

@@ -140,6 +140,21 @@ final class ChatStore {
         return conversation
     }
 
+    /// The conversation for a game match, keyed by the lobby id.
+    ///
+    /// Unlike `createGroup`, the id is supplied rather than minted, so **every player derives
+    /// the same conversation** without having to agree on one over the network — the lobby id
+    /// is already shared. Idempotent, so opening chat repeatedly during a match doesn't pile
+    /// up duplicate groups.
+    @discardableResult
+    func matchConversation(id: UUID, name: String?, members: [ConversationMember]) -> Conversation {
+        if let existing = conversations[id] { return existing }
+        makeRoom()
+        let conversation = Conversation(id: id, kind: .group, name: name, members: members, lastActivity: .now)
+        conversations[id] = conversation
+        return conversation
+    }
+
     /// Learns a conversation from an incoming message. Returns `false` if it conflicts with
     /// one we already know (a group's members can't be changed by a later message).
     func adopt(_ ref: ConversationRef) -> Bool {

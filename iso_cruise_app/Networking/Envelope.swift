@@ -209,6 +209,8 @@ nonisolated enum GameType: String, Codable, Sendable, CaseIterable, Identifiable
     case colorMatch
     case checkers
     case chess
+    case spades
+    case tonk
 
     var id: String { rawValue }
 
@@ -219,20 +221,25 @@ nonisolated enum GameType: String, Codable, Sendable, CaseIterable, Identifiable
         case .colorMatch: "Color Match"
         case .checkers: "Checkers"
         case .chess: "Chess"
+        case .spades: "Spades"
+        case .tonk: "Tonk"
         }
     }
 
     var minPlayers: Int {
         switch self {
         case .ticTacToe, .connectFour, .checkers, .chess: 2
-        case .colorMatch: 2
+        case .colorMatch, .tonk: 2
+        // Spades is partnerships, so it needs exactly four.
+        case .spades: SpadesRules.playerCount
         }
     }
 
     var maxPlayers: Int {
         switch self {
         case .ticTacToe, .connectFour, .checkers, .chess: 2
-        case .colorMatch: 4
+        case .colorMatch, .tonk: 4
+        case .spades: SpadesRules.playerCount
         }
     }
 }

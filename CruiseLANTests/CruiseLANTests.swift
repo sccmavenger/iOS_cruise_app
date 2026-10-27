@@ -790,3 +790,33 @@ struct MeshPacketTests {
         #expect(throws: MeshPacketError.self) { try MeshPacket.decode(Data("{}".utf8)) }
     }
 }
+
+@MainActor
+@Suite("Connection settings")
+struct ConnectionSettingsTests {
+    @Test("Turning Nearby radio off keeps that transport from starting; the Wi-Fi one still starts")
+    func radioOff() {
+        let radio = FakeTransport(), lan = FakeTransport()
+        let composite = CompositeTransport(children: [.init(radio, tier: .multipeer), .init(lan, tier: nil)])
+        composite.setEnabled(false, for: .multipeer)
+        composite.start(displayName: "Sam")
+        #expect(radio.startedName == nil)
+        #expect(lan.startedName == "Sam")
+        #expect(!composite.isEnabled(.multipeer))
+        composite.setEnabled(true, for: .multipeer)
+        composite.start(displayName: "Sam")
+        #expect(radio.startedName == "Sam")
+    }
+
+    @Test("The choice is remembered, and on by default")
+    func persisted() {
+        let defaults = UserDefaults(suiteName: "settings-\(UUID().uuidString)")!
+        #expect(ConnectionSettings(defaults: defaults).nearbyRadioEnabled)
+        var applied: [Bool] = []
+        let settings = ConnectionSettings(defaults: defaults)
+        settings.apply = { applied.append($0) }
+        settings.nearbyRadioEnabled = false
+        #expect(applied == [false])
+        #expect(!ConnectionSettings(defaults: defaults).nearbyRadioEnabled)
+    }
+}

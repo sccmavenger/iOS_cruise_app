@@ -5,6 +5,11 @@ struct ContentView: View {
     @Environment(ProfileStore.self) private var profile
     @Environment(SessionManager.self) private var session
 
+    /// Shown once after onboarding. Presented *after* the permission prompts rather than
+    /// before, so the live peer list on it can actually find people — an explanation of
+    /// discovery is worth much less than watching it happen.
+    @State private var showConnectGuide = false
+
     var body: some View {
         Group {
             if profile.nickname == nil {
@@ -16,6 +21,18 @@ struct ContentView: View {
         .task(id: profile.nickname) {
             if profile.nickname != nil, session.status == .idle {
                 session.start()
+            }
+        }
+        .sheet(isPresented: $showConnectGuide) {
+            GetConnectedView()
+        }
+        .onChange(of: profile.nickname, initial: true) { _, nickname in
+            guard nickname != nil, !profile.hasSeen(.connectGuide) else { return }
+            // A beat after the permission prompts, so it doesn't fight them for the screen.
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                guard !profile.hasSeen(.connectGuide) else { return }
+                showConnectGuide = true
             }
         }
         // Connection requests don't pop up: they wait in People › Requests, and the Chats
@@ -159,31 +176,46 @@ struct MainTabView: View {
 }
 
 /// The "Back to game" bar shown above the tabs while a match is minimized.
+///
+/// iOS places this above the tab bar at normal size and *inline with it* once the tab bar
+/// collapses, so the content has to work at two very different widths — two stacked lines of
+/// text don't fit inline. `tabViewBottomAccessoryPlacement` says which one we're in.
 struct MatchAccessoryView: View {
     @Environment(GameCoordinator.self) private var games
     @Environment(AppState.self) private var app
+    @Environment(\.tabViewBottomAccessoryPlacement) private var placement
+
+    private var isInline: Bool { placement == .inline }
 
     var body: some View {
         Button {
             app.isMatchMinimized = false
         } label: {
-            HStack(spacing: 12) {
+            HStack(spacing: isInline ? 8 : 12) {
                 Image(systemName: games.isAwaitingMe ? "hand.point.right.fill" : "gamecontroller.fill")
                     .foregroundStyle(games.isAwaitingMe ? Theme.sunset : Theme.teal)
                     .symbolEffect(.bounce, value: games.isAwaitingMe)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(games.lobby?.gameType.displayName ?? "Game")
-                        .font(.subheadline.weight(.semibold))
+                if isInline {
+                    // One line only: the title would push "Return" off the edge.
                     Text(status)
-                        .font(.caption)
+                        .font(.caption.weight(.medium))
                         .foregroundStyle(games.isAwaitingMe ? Theme.sunset : .secondary)
+                        .lineLimit(1)
+                } else {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(games.lobby?.gameType.displayName ?? "Game")
+                            .font(.subheadline.weight(.semibold))
+                        Text(status)
+                            .font(.caption)
+                            .foregroundStyle(games.isAwaitingMe ? Theme.sunset : .secondary)
+                    }
                 }
-                Spacer()
+                Spacer(minLength: 0)
                 Text("Return")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Theme.teal)
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, isInline ? 12 : 16)
             .contentShape(.rect)
         }
         .buttonStyle(.plain)

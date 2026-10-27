@@ -35,6 +35,13 @@ final class NudgeService: NSObject {
     private var peripheralManager: CBPeripheralManager?
     private var centralManager: CBCentralManager?
 
+    /// Bluetooth power state, for `NetworkPathProbe`. Read from the manager that already
+    /// exists rather than creating a second one, which would prompt the user again and burn
+    /// radio time. Nil until a manager has been created.
+    var managerState: CBManagerState? {
+        peripheralManager?.state ?? centralManager?.state
+    }
+
     private struct Outgoing {
         let serviceUUID: CBUUID
         let data: Data

@@ -1,0 +1,16 @@
+name = "cruiselan-telemetry"
+main = "src/index.js"
+compatibility_date = "2026-10-19"
+
+# Free tier is sufficient: at one report per device per six hours, a few hundred testers
+# produce well under a thousand requests a day against a 100k/day allowance.
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cruiselan-telemetry"
+# Filled in by `wrangler d1 create` — see README.md.
+database_id = "REPLACE_WITH_DATABASE_ID"
+
+# Rate limiting is configured in the Cloudflare dashboard rather than here, because the
+# free plan applies it at the zone level. See README.md.

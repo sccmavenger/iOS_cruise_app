@@ -2,15 +2,78 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!--
+	  CruiseLAN does not track. Nothing here is combined with data from other companies,
+	  used for advertising, or shared with a data broker. There are no third-party SDKs.
+	-->
 	<key>NSPrivacyTracking</key>
 	<false/>
 	<key>NSPrivacyTrackingDomains</key>
 	<array/>
+
+	<!--
+	  Declares the aggregated diagnostics uploaded by `TelemetryReporter` when, and only
+	  when, the user turns on "Share anonymous diagnostics" (off by default). Nothing is
+	  uploaded otherwise; the same numbers are still recorded on the device to drive the
+	  Troubleshooting and Insights screens, which is not collection.
+
+	  Everything uploaded is a count, a timing, or a label drawn from the closed
+	  `TelemetryDimension` vocabulary — never a message, nickname, mesh id, IP address,
+	  Wi-Fi network name, or location. Reports are grouped under a random pseudonym that
+	  rotates every 14 days and is cleared when the app is deleted, so none of this is
+	  linked to a person's identity. See docs/decisions/telemetry.md.
+	-->
 	<key>NSPrivacyCollectedDataTypes</key>
-	<array/>
+	<array>
+		<!-- Match and chat counts: how often features are used, never their content. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeProductInteraction</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+			</array>
+		</dict>
+		<!-- Timings: how long a link lasted, how long a move took to confirm. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypePerformanceData</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+			</array>
+		</dict>
+		<!-- Connectivity diagnostics: which transport carried traffic, what blocked it. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeOtherDiagnosticData</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+			</array>
+		</dict>
+	</array>
+
 	<key>NSPrivacyAccessedAPITypes</key>
 	<array>
 		<dict>
+			<!--
+			  UserDefaults holds this app's own settings only: the nickname, the diagnostics
+			  opt-in, and the two rotating pseudonyms (`TelemetryInstallId`, `LANNodeId`).
+			  CA92.1 = access info from the same app.
+			-->
 			<key>NSPrivacyAccessedAPIType</key>
 			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
 			<key>NSPrivacyAccessedAPITypeReasons</key>

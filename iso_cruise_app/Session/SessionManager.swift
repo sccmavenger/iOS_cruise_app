@@ -228,6 +228,8 @@ final class SessionManager {
     @ObservationIgnored private var identityCreatedAt: Date
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let identityStore: IdentityStore?
+    /// Optional so tests and previews can run without one. See docs/decisions/telemetry.md.
+    @ObservationIgnored private let telemetry: TelemetryStore?
 
     init(
         transport: any PeerTransport,
@@ -235,8 +237,10 @@ final class SessionManager {
         safety: SafetyStore = SafetyStore(),
         filter: ContentFilter = .shared,
         identity: IdentityStore? = nil,
+        telemetry: TelemetryStore? = nil,
         now: @escaping () -> Date = { .now }
     ) {
+        self.telemetry = telemetry
         self.transport = transport
         self.profile = profile
         self.safety = safety
@@ -315,6 +319,23 @@ final class SessionManager {
         links.values.filter { $0.connection == .connected }.count
     }
 
+    /// How this phone is linked directly to someone right now: one entry per working path
+    /// (the same person can be reachable over the Wi-Fi network and nearby radio at once).
+    /// Empty if they're only reachable through other phones, or not at all.
+    func media(for identityId: String) -> [LinkMedium] {
+        var seen = Set<LinkMedium>()
+        return links.values
+            .filter { $0.identityId == identityId && $0.connection == .connected }
+            .compactMap { transport.medium(for: $0.key) }
+            .filter { seen.insert($0).inserted }
+            .sorted { $0.sortOrder < $1.sortOrder }
+    }
+
+    /// How many of this phone's links use each kind of path, for the People summary.
+    var linkMedia: [LinkMedium] {
+        links.values.filter { $0.connection == .connected }.compactMap { transport.medium(for: $0.key) }
+    }
+
     /// Whether this user is waiting for an answer to a request sent to `identityId`.
     func isRequested(_ identityId: String) -> Bool {
         outgoingRequests[identityId].map { now().timeIntervalSince($0) < Self.requestLifetime } ?? false
@@ -351,6 +372,26 @@ final class SessionManager {
     func directConversation(with other: PeerIdentity) -> ChatStore.Conversation {
         chat.directConversation(local: ConversationMember(id: localId, nickname: localIdentity.nickname),
                                 other: ConversationMember(id: other.id, nickname: other.nickname))
+    }
+
+    /// The chat for a match: whoever is at this table, and nobody else.
+    ///
+    /// Tester feedback drove this. Opening chat from a game landed on the conversation list,
+    /// and the default conversation is "Everyone" — which broadcasts to *all* contacts. So
+    /// talking to the person you were playing with meant messaging people who weren't in the
+    /// game at all ("I only wanna be able to invite certain people").
+    ///
+    /// One opponent gives the existing one-to-one chat. More than one gives a group keyed by
+    /// the lobby id, so every player lands in the same conversation without negotiating it.
+    /// Returns nil for a lobby with nobody else in it yet.
+    @discardableResult
+    func matchConversation(lobbyId: UUID, named gameName: String, players: [PeerIdentity]) -> ChatStore.Conversation? {
+        let others = players.filter { $0.id != localId }
+        guard !others.isEmpty else { return nil }
+        if others.count == 1 { return directConversation(with: others[0]) }
+        let members = [ConversationMember(id: localId, nickname: localIdentity.nickname)]
+            + others.prefix(ConversationRef.maxMembers - 1).map { ConversationMember(id: $0.id, nickname: $0.nickname) }
+        return chat.matchConversation(id: lobbyId, name: gameName, members: members)
     }
 
     /// A new group with the chosen people plus the local user. The name is filtered like a nickname.
@@ -468,6 +509,12 @@ final class SessionManager {
 
     /// Restarts the transport so the new nickname is advertised. Contacts are reported as
     /// dropped first so games pause instead of getting out of sync.
+    /// Restarts discovery and links with the current transport settings (for example after
+    /// Nearby radio is turned off). Contacts drop and come back, and games pause meanwhile.
+    func restartTransport() {
+        nicknameDidChange()
+    }
+
     func nicknameDidChange() {
         suspend()
         start()
@@ -557,6 +604,14 @@ final class SessionManager {
         let ref = conversation.ref
         let envelope = send(.chat(ChatPayload(text: text, conversation: ref)), to: members.map { Array($0) })
         guard envelope != nil || !away.isEmpty else { return .noRecipients }
+        // Answers "do messages reach their recipients": a send with no live path is held
+        // rather than lost, so the ratio of held to sent measures reach, not loss.
+        telemetry?.count(.chatSendAttempt)
+        DiagnosticLog.shared.record(.chatSent)
+        if envelope == nil {
+            telemetry?.count(.chatHeldForAway)
+            DiagnosticLog.shared.record(.chatHeld)
+        }
         // Hold a copy for members who are away; they get it when they're back.
         let messageId = envelope?.id ?? UUID()
         let cutoff = now().addingTimeInterval(-Self.outboxLifetime)
@@ -777,6 +832,27 @@ final class SessionManager {
         lastAnnounce = lastAnnounce.filter { $0.value.receivedAt > directoryCutoff }
         refreshReachability()
         pruneDeparted()
+        sample()
+    }
+
+    /// Periodic telemetry samples. Taken on the tick rather than on every change so the
+    /// averages are over time rather than over activity — a phone that discovers nobody for
+    /// an hour has to contribute an hour of zeroes, or the battery-saver comparison would
+    /// only ever see the moments when discovery was already working.
+    @ObservationIgnored private var lastSampledAt: Date = .distantPast
+    private static let sampleInterval: TimeInterval = 60
+
+    private func sample() {
+        guard now().timeIntervalSince(lastSampledAt) >= Self.sampleInterval else { return }
+        lastSampledAt = now()
+        telemetry?.observe(.reachableContacts, Double(reachableIds.count))
+        // The battery-saver question: same measurement, split by power mode, so the two
+        // averages can be compared directly. See docs/decisions/telemetry.md.
+        telemetry?.observe(
+            .peersVisibleByPowerMode,
+            Double(directory.count),
+            ProcessInfo.processInfo.isLowPowerModeEnabled ? .lowPowerOn : .lowPowerOff
+        )
     }
 
     /// Recomputes which contacts are connected and reports the changes.
@@ -796,6 +872,7 @@ final class SessionManager {
             guard let identity = knownIdentities[id] else { continue }
             droppedAt[id] = now()
             DebugTrace.log("session contact lost \(identity.nickname)")
+            DiagnosticLog.shared.note("session", "contact \(DiagnosticLog.shared.handle(identity.id)) unreachable (stepped away: \(steppedAwayIds.contains(id)))")
             chat.appendSystem(steppedAwayIds.contains(id) ? "\(identity.labeledName) stepped away" : "\(identity.labeledName) disconnected")
             onPeerDisconnected?(identity, .connectionLost)
         }
@@ -804,6 +881,7 @@ final class SessionManager {
             let returning = droppedAt[id] != nil
             droppedAt[id] = nil
             DebugTrace.log("session contact reachable \(identity.nickname) hops=\(directory[id]?.hops ?? -1) returning=\(returning)")
+            DiagnosticLog.shared.note("session", "contact \(DiagnosticLog.shared.handle(identity.id)) reachable, \(directory[id]?.hops ?? -1) hop(s), returning \(returning)")
             chat.updateNickname(identity.nickname, for: id)
             chat.appendSystem(returning ? "\(identity.labeledName) is back" : "\(identity.labeledName) connected")
             // Give them our Bluetooth key each time (they may have restarted).
@@ -926,6 +1004,7 @@ final class SessionManager {
         let previous = link.connection
         link.connection = state
         DebugTrace.log("session link \(link.displayName) \(previous) -> \(state)")
+        DiagnosticLog.shared.note("session", "link \(DiagnosticLog.shared.handle(link.advertisedName)) \(previous) -> \(state), medium \(transport.medium(for: key).map { "\($0)" } ?? "none"), \(linkedCount) linked")
 
         if state == .connected, previous != .connected {
             linkTasks.removeValue(forKey: key)?.cancel()
@@ -1051,6 +1130,9 @@ final class SessionManager {
                   let nickname = Nickname.sanitize(announce.nickname)
             else { return reject("bad broadcast") }
             updateDirectory(packet, nickname: nickname, hops: hops)
+            // How far the mesh actually reaches: 0 means a direct radio or LAN neighbour,
+            // anything higher came through someone else's phone.
+            telemetry?.observe(.announceHopCount, Double(hops))
             lastAnnounce[packet.origin] = (packet, now())
             refreshReachability()
             return
@@ -1191,6 +1273,7 @@ final class SessionManager {
             chat.appendText(id: envelope.id, senderId: origin, senderName: identity.nickname, text: chatPayload.text,
                             isLocal: false, conversationId: conversationId)
             DebugTrace.log("session chat from \(identity.nickname) hops=\(MeshPacket.maxTTL - packet.ttl): \(chatPayload.text)")
+            DiagnosticLog.shared.note("session", "chat received from \(DiagnosticLog.shared.handle(identity.id)), \(MeshPacket.maxTTL - packet.ttl) hop(s), \(chatPayload.text.count) chars")
             onChatReceived?(identity, chatPayload.text, conversationId)
         case .presence(let presence):
             if presence.away {
@@ -1279,7 +1362,24 @@ final class SessionManager {
 
     private func reject(_ reason: StaticString) {
         rejectedEnvelopeCount += 1
+        let dimension = Self.rejectionDimension(reason)
+        telemetry?.count(.packetRejected, dimension)
+        DiagnosticLog.shared.record(.packetRejected, detail: dimension.rawValue)
         DebugTrace.log("session reject \(reason)")
+        DiagnosticLog.shared.note("session", "packet rejected: \(reason)")
         Self.logger.notice("Rejected inbound packet: \(reason, privacy: .public)")
+    }
+
+    /// Maps a rejection reason onto the closed telemetry vocabulary. Reasons are
+    /// `StaticString` literals from this file, so this mapping is exhaustive in practice;
+    /// anything unmapped is reported as a plain failure rather than inventing a label.
+    private static func rejectionDimension(_ reason: StaticString) -> TelemetryDimension {
+        switch "\(reason)" {
+        case "link rate limited", "sender rate limited": .refused
+        case "bad packet", "bad sealed packet": .badSignature
+        case "bad hello", "bad broadcast": .oversized
+        case "not a contact", "unrequested accept", "not a member": .unknownSender
+        default: .failure
+        }
     }
 }

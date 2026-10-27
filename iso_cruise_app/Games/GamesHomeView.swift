@@ -213,6 +213,8 @@ extension GameType {
         case .colorMatch: "Match colors and numbers, empty your hand."
         case .checkers: "Jump your way across the board."
         case .chess: "Checkmate the king to win."
+        case .spades: "Partners, bids, and trump. Four players."
+        case .tonk: "Fast rummy. Spread, hit, or drop."
         }
     }
 
@@ -236,6 +238,8 @@ struct GameArtwork: View {
             case .colorMatch: colorMatch
             case .checkers: checkers
             case .chess: chess
+            case .spades: spades
+            case .tonk: tonk
             }
         }
         .accessibilityHidden(true)
@@ -248,6 +252,44 @@ struct GameArtwork: View {
         case .colorMatch: LinearGradient(colors: [Theme.sunset, Theme.coral], startPoint: .top, endPoint: .bottom)
         case .checkers: LinearGradient(colors: [Theme.coral, Theme.night], startPoint: .top, endPoint: .bottom)
         case .chess: LinearGradient(colors: [Theme.foam, Theme.teal], startPoint: .top, endPoint: .bottom)
+        case .spades: LinearGradient(colors: [Theme.night, Theme.deep], startPoint: .top, endPoint: .bottom)
+        case .tonk: LinearGradient(colors: [Theme.teal, Theme.coral], startPoint: .top, endPoint: .bottom)
+        }
+    }
+
+    /// A fanned hand with the spade pip on top.
+    private var spades: some View {
+        ZStack {
+            ForEach(Array([-18.0, 0.0, 18.0].enumerated()), id: \.offset) { index, angle in
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(.white.opacity(index == 1 ? 0.95 : 0.6))
+                    .frame(width: 26, height: 38)
+                    .rotationEffect(.degrees(angle))
+                    .offset(x: CGFloat(angle) * 0.7)
+            }
+            Image(systemName: "suit.spade.fill")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(Theme.night)
+        }
+    }
+
+    /// A stack of cards with one card lifted off, suggesting draw-and-discard.
+    private var tonk: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(.white.opacity(0.55))
+                .frame(width: 26, height: 38)
+                .offset(x: -10, y: 4)
+            RoundedRectangle(cornerRadius: 4)
+                .fill(.white.opacity(0.95))
+                .frame(width: 26, height: 38)
+                .offset(x: 10, y: -4)
+                .overlay {
+                    Image(systemName: "suit.heart.fill")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Theme.coral)
+                        .offset(x: 10, y: -4)
+                }
         }
     }
 

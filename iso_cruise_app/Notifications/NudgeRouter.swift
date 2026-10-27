@@ -14,6 +14,10 @@ final class NudgeRouter {
     private let notifications: NotificationManager
     private let nudges: NudgeService
 
+    /// Exposed so `NetworkPathProbe` can read Bluetooth power state without creating a
+    /// second `CBManager`.
+    var service: NudgeService { nudges }
+
     private var delivered = Nudge.RateLimiter(interval: Nudge.deliveredInterval)
     private var received = Nudge.RateLimiter(interval: Nudge.receiveInterval)
     private var replay = Nudge.ReplayGuard()

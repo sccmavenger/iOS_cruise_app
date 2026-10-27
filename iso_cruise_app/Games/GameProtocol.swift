@@ -8,6 +8,8 @@ nonisolated enum GameMove: Codable, Equatable, Sendable {
     case colorMatch(ColorMatchAction)
     case checkers(CheckersAction)
     case chess(ChessAction)
+    case spades(SpadesAction)
+    case tonk(TonkAction)
 
     /// Cheap bounds check performed at decode time, before any game logic runs.
     var isStructurallyValid: Bool {
@@ -17,6 +19,8 @@ nonisolated enum GameMove: Codable, Equatable, Sendable {
         case .colorMatch(let action): action.isStructurallyValid
         case .checkers(let action): action.isStructurallyValid
         case .chess(let action): action.isStructurallyValid
+        case .spades(let action): action.isStructurallyValid
+        case .tonk(let action): action.isStructurallyValid
         }
     }
 }
@@ -29,6 +33,8 @@ nonisolated enum GameStateSnapshot: Codable, Equatable, Sendable {
     case colorMatch(ColorMatchSnapshot)
     case checkers(CheckersState)
     case chess(ChessState)
+    case spades(SpadesSnapshot)
+    case tonk(TonkSnapshot)
 
     var gameType: GameType {
         switch self {
@@ -37,6 +43,8 @@ nonisolated enum GameStateSnapshot: Codable, Equatable, Sendable {
         case .colorMatch: .colorMatch
         case .checkers: .checkers
         case .chess: .chess
+        case .spades: .spades
+        case .tonk: .tonk
         }
     }
 
@@ -47,6 +55,8 @@ nonisolated enum GameStateSnapshot: Codable, Equatable, Sendable {
         case .colorMatch(let snapshot): snapshot.isStructurallyValid
         case .checkers(let state): state.isStructurallyValid
         case .chess(let state): state.isStructurallyValid
+        case .spades(let snapshot): snapshot.isStructurallyValid
+        case .tonk(let snapshot): snapshot.isStructurallyValid
         }
     }
 
@@ -57,6 +67,8 @@ nonisolated enum GameStateSnapshot: Codable, Equatable, Sendable {
         case .colorMatch(let snapshot): snapshot.players
         case .checkers(let state): state.players
         case .chess(let state): state.players
+        case .spades(let snapshot): snapshot.players
+        case .tonk(let snapshot): snapshot.players
         }
     }
 
@@ -69,6 +81,9 @@ nonisolated enum GameStateSnapshot: Codable, Equatable, Sendable {
         case .colorMatch(let snapshot): snapshot.roundResult == nil ? [snapshot.drawFourTarget ?? snapshot.currentPlayer] : []
         case .checkers(let state): state.outcome == nil ? [state.playerId(for: state.turn)] : []
         case .chess(let state): state.outcome == nil ? [state.playerId(for: state.turn)] : []
+        // Both card games wait on exactly one player, including during Spades bidding.
+        case .spades(let snapshot): snapshot.phase == .handOver ? [] : [snapshot.currentPlayer]
+        case .tonk(let snapshot): snapshot.phase == .roundOver ? [] : [snapshot.currentPlayer]
         }
     }
 
@@ -80,6 +95,8 @@ nonisolated enum GameStateSnapshot: Codable, Equatable, Sendable {
         case .colorMatch(let snapshot): snapshot.roundResult != nil
         case .checkers(let state): state.outcome != nil
         case .chess(let state): state.outcome != nil
+        case .spades(let snapshot): snapshot.roundResult != nil
+        case .tonk(let snapshot): snapshot.roundResult != nil
         }
     }
 }
