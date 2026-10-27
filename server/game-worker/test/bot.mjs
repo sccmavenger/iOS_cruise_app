@@ -1,19 +1,26 @@
 // A scripted second player for end-to-end tests with the app:
 //   node test/bot.mjs <CODE> [--leave-after N]
+//   node test/bot.mjs --host [game]        host an open game and start it when someone joins
+//   node test/bot.mjs --quickplay [game]   use Quick Play
 // Joins the room, then plays Tic-Tac-Toe or Connect Four whenever it's its turn (first free cell),
 // and votes for rematches. Reconnects like the app does, and keeps its seat in /tmp so a restarted
 // bot rejoins the same seat. Logs every message to stdout.
 import WebSocket from "ws";
 import fs from "node:fs";
 const BASE = process.env.BASE ?? "https://cruiselan-games.dguilloryjr.workers.dev";
-const code = process.argv[2];
+const mode = process.argv[2]?.startsWith("--") ? process.argv[2] : "--join";
+const code = mode === "--join" ? process.argv[2] : null;
+const gameArg = mode === "--join" ? null : process.argv[3] ?? "ticTacToe";
 const leaveAfter = process.argv.includes("--leave-after") ? Number(process.argv[process.argv.indexOf("--leave-after") + 1]) : -1;
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
-const saved = `/tmp/cruiselan-bot-${code}.json`;
-let seat = fs.existsSync(saved) ? JSON.parse(fs.readFileSync(saved, "utf8")) : null;
+const saved = code ? `/tmp/cruiselan-bot-${code}.json` : null;
+let seat = saved && fs.existsSync(saved) ? JSON.parse(fs.readFileSync(saved, "utf8")) : null;
 if (!seat) {
-  seat = await (await fetch(`${BASE}/v1/rooms/${code}/join`, { method: "POST", body: JSON.stringify({ nickname: "RoboBob" }) })).json();
-  if (seat.token) fs.writeFileSync(saved, JSON.stringify(seat));
+  const post = (path, body) => fetch(`${BASE}${path}`, { method: "POST", body: JSON.stringify(body) }).then((r) => r.json());
+  seat = mode === "--host" ? await post("/v1/rooms", { game: gameArg, nickname: "RoboBob", open: true })
+    : mode === "--quickplay" ? await post("/v1/quickplay", { game: gameArg, nickname: "RoboBob" })
+    : await post(`/v1/rooms/${code}/join`, { nickname: "RoboBob" });
+  if (seat.token) fs.writeFileSync(`/tmp/cruiselan-bot-${seat.code}.json`, JSON.stringify(seat));
 }
 log("seat", JSON.stringify({ seat: seat.seat, game: seat.game, error: seat.error }));
 if (!seat.token) process.exit(1);
@@ -36,6 +43,10 @@ connect();
 function onMessage(data) {
   if (data.toString() === "pong") return;
   const m = JSON.parse(data);
+  // Hosting: start as soon as someone has joined and connected.
+  if (m.type === "roster" && m.phase === "lobby" && m.organizer === seat.seat && m.players.length >= 2 && m.players.every((p) => p.connected)) {
+    setTimeout(() => ws.send(JSON.stringify({ type: "start" })), 1500);
+  }
   if (m.type === "roster") log("roster", m.phase, m.players.map((p) => `${p.nickname}${p.connected ? "" : "(away)"}`).join(", "), m.endedMessage ?? "", m.rematchVotes.length ? `votes ${m.rematchVotes}` : "");
   if (m.type === "result") log("result", m.ok ? `ok rev ${m.revision}` : m.error);
   if (m.type !== "snapshot" || m.revision <= revision) return;

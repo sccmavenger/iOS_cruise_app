@@ -53,3 +53,30 @@ The owner's expectation, verbatim:
 - **Still to do by hand.** The App Store Connect "App Privacy" answers must change from "Data Not
   Collected" to declare Gameplay Content (not linked to identity, not used for tracking) before
   2.0 is submitted for review.
+
+## Update (same day): games first, chat off, open games
+
+The owner, verbatim:
+
+> I feel like I shouldn't have to connect to people to get a game going. I should be able to go
+> straight to hosting a game and anyone using the app should be able to join.
+
+And: "open the default and private the option. i will want to reintroduce chat later but for now
+we can turn it off."
+
+- **Chat off.** `AppFeatures.chatEnabled = false`. Games is the whole app, and Profile is in its
+  toolbar. The chat code and its tests are untouched; flipping the flag restores the Chat tab,
+  People, the connect guide, the match's Chat button and notifications.
+- **Open by default, private as the option.** Online, an open game appears in the service's
+  open-games list (a `LobbyDirectory` Durable Object) until it fills, starts or ends; a private
+  game is code-only. Offline, an open game is offered to everyone nearby; a private one only to
+  invitees.
+- **No connecting needed offline.** Game traffic, and only game traffic, now flows with anyone
+  nearby running CruiseLAN who isn't blocked (`SessionManager.playerIds`). Chat stays
+  contacts-only.
+- **Quick Play.** It joins the open game that has waited longest, or hosts a new open one, both
+  online and nearby.
+- **Safety for open games.** There's no chat in games. Nicknames are filtered. The host can
+  remove a player before the start: online, that seat can't reconnect and Quick Play avoids that
+  game; nearby, the removed player can't rejoin the lobby. Anyone can report a player from the
+  lobby or the match; nearby reports also block. The privacy policy covers the open list.

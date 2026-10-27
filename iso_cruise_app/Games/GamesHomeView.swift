@@ -44,7 +44,7 @@ struct GamesHomeView: View {
             .overlay {
                 // Creating or joining an online game takes a moment; say so.
                 if games.isConnectingOnline {
-                    ProgressView("Setting up your online game…")
+                    ProgressView(games.connectingMessage)
                         .padding(24)
                         .glassEffect(.regular, in: .rect(cornerRadius: 20))
                 }
@@ -52,6 +52,8 @@ struct GamesHomeView: View {
             .navigationTitle("Games")
             .onAppear { openGames.startWatching() }
             .onDisappear { openGames.stopWatching() }
+            // A game just started or ended here: the list changed, so don't wait for the next refresh.
+            .onChange(of: games.lobby?.id) { Task { await openGames.refresh() } }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Profile", systemImage: "person.crop.circle") { showProfile = true }

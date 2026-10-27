@@ -98,7 +98,8 @@ struct MatchContainerView: View {
         guard let lobby = games.lobby else { return "" }
         if lobby.isOnline {
             if lobby.phase == .lobby {
-                return games.isHost ? "Another player will become the host." : "Your seat will open up for someone else."
+                if games.isHost { return lobby.players.count > 1 ? "Another player will become the host." : "The game will close." }
+                return "Your seat will open up for someone else."
             }
             return "The game will end for the other players."
         }
@@ -176,6 +177,8 @@ struct LobbyView: View {
                             } label: {
                                 Image(systemName: "ellipsis.circle")
                                     .imageScale(.large)
+                                    .frame(minWidth: 44, minHeight: 44)
+                                    .contentShape(.rect)
                                     .accessibilityLabel("Options for \(player.nickname)")
                             }
                         }

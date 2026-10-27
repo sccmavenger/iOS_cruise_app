@@ -98,6 +98,8 @@ final class GameCoordinator {
     private(set) var isCloudConnected = false
     /// Creating or joining an online game is in progress.
     private(set) var isConnectingOnline = false
+    /// What's in progress, in words: "Joining the game…", "Finding a game…", "Setting up your game…".
+    private(set) var connectingMessage = ""
     @ObservationIgnored private let cloud: CloudGameService?
     @ObservationIgnored private let cloudStore: CloudRoomStore?
     @ObservationIgnored private let onlineAvailable: () async -> Bool
@@ -210,6 +212,7 @@ final class GameCoordinator {
         guard gameType.isPlayable else { return }
         guard let cloud else { return hostOnThisPhone(gameType, open: open) }
         isConnectingOnline = true
+        connectingMessage = "Setting up your game…"
         Task {
             defer { isConnectingOnline = false }
             guard await onlineAvailable() else { return hostOnThisPhone(gameType, open: open) }
@@ -231,6 +234,7 @@ final class GameCoordinator {
         }
         guard let cloud else { return }
         isConnectingOnline = true
+        connectingMessage = "Joining the game…"
         Task {
             defer { isConnectingOnline = false }
             do throws(CloudError) {
@@ -258,6 +262,7 @@ final class GameCoordinator {
         }
         guard let cloud else { return nearby() }
         isConnectingOnline = true
+        connectingMessage = "Finding a game…"
         Task {
             defer { isConnectingOnline = false }
             guard await onlineAvailable() else { return nearby() }
