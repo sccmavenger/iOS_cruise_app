@@ -8,19 +8,37 @@
 </head>
 <body>
 <h1>CruiseLAN Privacy Policy</h1>
-<p><em>Effective October 15, 2026</em></p>
+<p><em>Effective October 27, 2026 (version 2.0)</em></p>
 
-<p>CruiseLAN lets people near each other chat and play games without the internet. It is designed so that we, the developer, never receive your data.</p>
+<p>CruiseLAN lets people chat and play games together, nearby without the internet, and online with the internet. It is designed to collect as little as possible. Chat never leaves the phones in the conversation.</p>
 
 <h2>What we collect</h2>
-<p><strong>Nothing.</strong> CruiseLAN has no accounts, no servers, no analytics, no advertising, and no tracking. We don't collect, store, sell, or share personal information.</p>
+<p>CruiseLAN has no accounts, no advertising, and no tracking, and we never sell or share personal information. We only receive two things, and only when you use them:</p>
+<ul>
+<li><strong>Online games</strong> (below), when you host or join a game while the internet is available.</li>
+<li><strong>Anonymous diagnostics</strong>, only if you turn on "Share anonymous diagnostics" in Profile (off by default): counts and timings such as which connection type worked, never messages, nicknames, locations, or network names.</li>
+</ul>
+
+<h2>Online games</h2>
+<p>When the internet is available, games are hosted by our online game service (run on Cloudflare) instead of on a phone, so friends can play from anywhere and a game survives a phone dropping out. For each online game the service keeps:</p>
+<ul>
+<li>the game and its moves, including the cards dealt, so it can enforce the rules and show each player only their own cards;</li>
+<li>the nickname you play under, shown to the other players in that game;</li>
+<li>a random secret that lets your phone rejoin its seat (we store only a scrambled form of it).</li>
+</ul>
+<p>There's no account and nothing that identifies you or links your games together. Your phone's internet address is seen by the service while you're connected, as with any website, and is used only to limit abuse such as guessing invite codes; it isn't stored with your games. Each game is deleted automatically: 24 hours after creation if it never starts, 7 days after the last move, or 30 days after it ends. Leaving a game removes you from it. Online chat isn't offered: chat stays between nearby phones. Cloudflare's request logs, which we use only to fix problems, are kept for a few days. Questions or deletion requests go to the address below.</p>
+<p>You can turn online games off in Profile; then every game is hosted on a phone nearby, as in earlier versions.</p>
 
 <h2>What stays on your device</h2>
 <ul>
 <li><strong>Your nickname</strong>, the list of people you've blocked, and devices you've recently connected with (forgotten after 24 hours) are saved on your phone so the app works between launches.</li>
 <li>So notifications keep working if iOS closes CruiseLAN in the background, your phone keeps its temporary CruiseLAN ID, the nicknames of people you recently connected with, and the Bluetooth keys shared with them in the iPhone Keychain, on this device only, for up to 12 hours after you last used the app.</li>
-<li><strong>Chats and games</strong> are kept only in memory and are erased when you quit the app.</li>
+<li><strong>Chats and nearby games</strong> are kept only in memory and are erased when you quit the app.</li>
+<li>If you're in an online game, your phone keeps that game's invite code and seat secret in the iPhone Keychain, on this device only, so it can go back to the game if iOS closes CruiseLAN. It's removed when the game ends or you leave.</li>
 </ul>
+
+<h2>What other players can see</h2>
+<p>In an online game, the other players see your nickname, whether you're connected, and your moves. They never see your cards.</p>
 
 <h2>What nearby people can see</h2>
 <p>When you're connected with someone, your phone sends your messages and game moves to their phone over encrypted Wi-Fi or Bluetooth links. If they're out of range, other CruiseLAN phones in between pass the messages along. Messages are end-to-end encrypted, so only you and the people you're talking to can read them; phones that pass them along can't. Nothing passes through us. Only accept connections from people you recognize.</p>
@@ -31,7 +49,7 @@
 <p>If you report someone, CruiseLAN opens an email in the Mail app addressed to us, containing the reason, the nickname, and the message you reported. Nothing is sent unless you tap Send. We use reports only to respond to safety concerns and improve the safety filter, and we delete them when they're resolved.</p>
 
 <h2>Children</h2>
-<p>CruiseLAN is suitable for families. Because we collect no personal information, including from children, there is nothing for us to share or sell. An on-device filter blocks inappropriate words and personal details such as phone numbers, emails, links, and cabin numbers. Parents can review the safety tips in Profile.</p>
+<p>CruiseLAN is suitable for families. We don't collect personal information from anyone, including children: online games use a nickname and moves only, with no account, and are deleted automatically. An on-device filter blocks inappropriate words and personal details such as phone numbers, emails, links, and cabin numbers. Parents can review the safety tips in Profile.</p>
 
 <h2>Permissions</h2>
 <ul>
@@ -39,6 +57,7 @@
 <li><strong>Bluetooth</strong>: to connect nearby and to send and receive nudges.</li>
 <li><strong>Location</strong> (optional, only if you tap "Show name" in Troubleshooting): iOS requires it before an app can read the name of the Wi-Fi network you're on. CruiseLAN uses it only to show that name on your screen. It never records, stores, or shares your location or the network name.</li>
 <li><strong>Notifications</strong>: to tell you about new messages and your turn. Notifications are created on your phone.</li>
+<li><strong>Internet</strong> (no permission prompt): for online games, only while you're in one or when CruiseLAN checks whether online games are available.</li>
 </ul>
 
 <h2>Changes and contact</h2>

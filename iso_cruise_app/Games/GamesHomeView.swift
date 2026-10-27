@@ -39,6 +39,14 @@ struct GamesHomeView: View {
                 }
                 .padding()
             }
+            .overlay {
+                // Creating or joining an online game takes a moment; say so.
+                if games.isConnectingOnline {
+                    ProgressView("Setting up your online game…")
+                        .padding(24)
+                        .glassEffect(.regular, in: .rect(cornerRadius: 20))
+                }
+            }
             .navigationTitle("Games")
             .sheet(item: $selectedGame) { game in
                 GameDetailSheet(game: game)

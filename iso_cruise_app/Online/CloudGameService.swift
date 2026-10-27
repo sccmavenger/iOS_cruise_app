@@ -102,8 +102,9 @@ final class WebSocketRoomConnection: CloudRoomConnection {
     private var retryTask: Task<Void, Never>?
     private var pingTask: Task<Void, Never>?
 
-    /// Ping often enough that no proxy or carrier NAT on the way sees an idle connection.
-    /// Cloudflare answers pings itself, so they don't wake the room.
+    /// A text "ping" this often keeps the seat marked as connected (the room shows a phone as
+    /// away after 75 s of silence) and keeps proxies and carrier NATs from closing an idle
+    /// connection. Cloudflare answers "pong" itself, so it doesn't wake the room.
     static let pingInterval: Duration = .seconds(25)
     static let maxRetryDelay: Duration = .seconds(30)
 
@@ -203,10 +204,7 @@ final class WebSocketRoomConnection: CloudRoomConnection {
             while !Task.isCancelled {
                 try? await Task.sleep(for: Self.pingInterval)
                 guard !Task.isCancelled, let self, attempt == self.generation else { return }
-                task.sendPing { error in
-                    guard error != nil else { return }
-                    Task { @MainActor in self.dropped(attempt) }
-                }
+                do { try await task.send(.string("ping")) } catch { self.dropped(attempt) }
             }
         }
     }

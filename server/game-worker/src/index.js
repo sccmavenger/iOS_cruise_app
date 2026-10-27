@@ -12,6 +12,8 @@
 //   { type: "start" }                       organizer starts the game
 //   { type: "move", moveId, baseRevision, move }
 //   { type: "rematch" } | { type: "leave" } | { type: "ping", t }
+//   "ping" (plain text, every 25 s): answered "pong" by Cloudflare without waking the room; it keeps
+//   the seat marked as connected
 // server → client
 //   { type: "roster", ... } | { type: "snapshot", revision, view } |
 //   { type: "result", moveId, ok, revision, error?, message?, duplicate? } |
@@ -31,6 +33,10 @@ const HOUR = 3600 * 1000, DAY = 24 * HOUR;
 // move, ended games 30 days.
 const TTL = { lobby: DAY, playing: 7 * DAY, ended: 30 * DAY };
 const MAX_MESSAGE_BYTES = 16 * 1024;
+// A socket counts as connected only if it said something recently. Clients send "ping" every
+// 25 s; Cloudflare answers "pong" itself without waking the room. A phone that vanished without
+// closing (dead battery, lost signal) shows as away after this long.
+const PRESENCE_TIMEOUT = 75 * 1000;
 const CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"; // Crockford base32, no I L O U
 
 let rules = null;
@@ -107,6 +113,7 @@ export class Room extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
+    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS room (
         id INTEGER PRIMARY KEY CHECK (id = 1), code TEXT NOT NULL, game TEXT NOT NULL, phase TEXT NOT NULL,
@@ -177,6 +184,7 @@ export class Room extends DurableObject {
       const pair = new WebSocketPair();
       // Hibernation API: the room sleeps between moves and keeps the sockets; the tag is the seat.
       this.ctx.acceptWebSocket(pair[1], [row.seat]);
+      pair[1].serializeAttachment({ lastSeen: Date.now() });
       this.broadcastRoster();
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
@@ -188,6 +196,7 @@ export class Room extends DurableObject {
   async webSocketMessage(ws, message) {
     if (typeof message !== "string" || message.length > MAX_MESSAGE_BYTES) return this.send(ws, { type: "error", error: "tooLarge" });
     const [seat] = this.ctx.getTags(ws);
+    ws.serializeAttachment({ lastSeen: Date.now() });
     let msg;
     try { msg = JSON.parse(message); } catch { return this.send(ws, { type: "error", error: "badJSON" }); }
     const room = this.room();
@@ -215,7 +224,7 @@ export class Room extends DurableObject {
   /** Everyone's view of the table: who's seated, who's connected, the phase, rematch votes. */
   rosterFor(seat, closing) {
     const room = this.room();
-    const connected = new Set(this.ctx.getWebSockets().filter((s) => s !== closing).flatMap((s) => this.ctx.getTags(s)));
+    const connected = new Set(this.ctx.getWebSockets().filter((s) => s !== closing && this.isLive(s)).flatMap((s) => this.ctx.getTags(s)));
     const seats = this.activeSeats();
     return {
       type: "roster", protocol: PROTOCOL, code: room.code, game: room.game, phase: room.phase,
@@ -223,6 +232,12 @@ export class Room extends DurableObject {
       you: seat, players: seats.map((s) => ({ seat: s.seat, nickname: s.nickname, connected: connected.has(s.seat) })),
       rematchVotes: seats.filter((s) => s.rematch).map((s) => s.seat),
     };
+  }
+
+  isLive(ws) {
+    const pinged = this.ctx.getWebSocketAutoResponseTimestamp(ws)?.getTime() ?? 0;
+    const spoke = ws.deserializeAttachment()?.lastSeen ?? 0;
+    return Date.now() - Math.max(pinged, spoke) < PRESENCE_TIMEOUT;
   }
 
   broadcastRoster(closing) {

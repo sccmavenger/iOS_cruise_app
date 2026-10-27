@@ -24,7 +24,9 @@ class Player {
   async connect() {
     this.ws = new WebSocket(`${WS_BASE}/v1/rooms/${this.code}/socket`, { headers: { Authorization: `Bearer ${this.token}` } });
     this.ws.on("message", (data) => {
-      const text = data.toString(); this.raw.push(text);
+      const text = data.toString();
+      if (text === "pong") return;
+      this.raw.push(text);
       const msg = JSON.parse(text);
       if (msg.type === "snapshot" && msg.revision >= this.revision) { this.revision = msg.revision; this.view = msg.view; }
       if (msg.type === "roster") this.roster = msg;
@@ -247,11 +249,26 @@ async function restart2() {
   players.forEach((p) => p.close());
 }
 
+/** Slow (80 s): a phone that goes silent without closing shows as away; one that pings doesn't. */
+async function presence() {
+  const [silent, pinger] = await room("ticTacToe", 2);
+  const keepAlive = setInterval(() => pinger.ws.send("ping"), 20000);
+  pinger.ws.on("message", () => {}); // "pong" replies are plain text and skipped by the parser below
+  await sleep(80000);
+  clearInterval(keepAlive);
+  pinger.inbox = []; // only the roster sent in reply to this resume counts
+  const roster = await pinger.resume();
+  const bySeat = Object.fromEntries(roster.players.map((p) => [p.seat, p.connected]));
+  check("A seat that pings stays connected; one silent for 75 s shows as away", bySeat[pinger.seat] === true && bySeat[silent.seat] === false, JSON.stringify(roster.players));
+  silent.close(); pinger.close();
+}
+
 const phase = process.argv[2] ?? "all";
 try {
   if (phase === "all") { await basics(); await lobbyHandover(); await turnIndependent(); await hiddenCards(); }
   if (phase === "restart1") await restart1();
   if (phase === "restart2") await restart2();
+  if (phase === "presence") await presence();
 } catch (error) {
   check(`crashed: ${error.message}`, false);
 }

@@ -209,7 +209,7 @@ struct LobbyView: View {
                         Text("Connecting to the online game service…")
                     } else if !games.canStart {
                         Text(lobby.players.count < lobby.gameType.minPlayers
-                             ? "Waiting for \(lobby.gameType.minPlayers - lobby.players.count) more player(s)."
+                             ? (lobby.gameType.minPlayers - lobby.players.count == 1 ? "Waiting for 1 more player." : "Waiting for \(lobby.gameType.minPlayers - lobby.players.count) more players.")
                              : lobby.players.contains(where: { games.awayIds.contains($0.id) })
                                 ? (lobby.isOnline ? "Waiting for everyone to connect." : "Waiting for everyone to come back.")
                                 : "Waiting for everyone to be ready.")
@@ -249,7 +249,7 @@ struct MatchView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
-                if lobby.isOnline, !games.isCloudConnected {
+                if games.lobby?.isOnline == true, !games.isCloudConnected {
                     AwayBanner(
                         title: "Reconnecting to the game…",
                         detail: "Your game is saved online. A move you make now is sent as soon as you're back.",

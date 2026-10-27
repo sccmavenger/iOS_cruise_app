@@ -25,6 +25,25 @@
 	-->
 	<key>NSPrivacyCollectedDataTypes</key>
 	<array>
+		<!--
+		  Online games (version 2): when the internet is reachable, the online game service
+		  (server/game-worker, on Cloudflare) holds each game's moves and state and the nickname
+		  each player uses at that table, so it can host the game. There are no accounts; a seat
+		  is a random per-game secret (stored hashed), so nothing is linked to a person or across
+		  games. Deleted automatically: 24 h unused, 7 days idle, 30 days after the game ends.
+		-->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeGameplayContent</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
 		<!-- Match and chat counts: how often features are used, never their content. -->
 		<dict>
 			<key>NSPrivacyCollectedDataType</key>

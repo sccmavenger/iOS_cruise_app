@@ -41,8 +41,8 @@ import jwt  # PyJWT, with `cryptography` for ES256
 API = "https://api.appstoreconnect.apple.com"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BUNDLE_ID = "com.dannyguillory.cruiselan"
-VERSION = "1.9"
-BUILD = "24"
+VERSION = "2.0"
+BUILD = "25"
 LOCALE = "en-US"
 SCREENSHOT_DIR = ROOT / "docs/app-store/screenshots"
 SCREENSHOT_DISPLAY_TYPE = "APP_IPHONE_67"  # The 6.7"/6.9" iPhone slot; accepts 1320 × 2868.
