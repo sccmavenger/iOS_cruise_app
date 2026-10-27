@@ -90,6 +90,7 @@ struct MatchContainerView: View {
             }
         }
         .interactiveDismissDisabled()
+        .modifier(InviteSwitchAlert(isOnTop: true))
         .onAppear { app.isMatchVisible = true }
         .onDisappear { app.isMatchVisible = false }
     }
@@ -352,15 +353,19 @@ struct OnlineCodeSection: View {
                         .accessibilityLabel("Invite code \(shown.map(String.init).joined(separator: " "))")
                 }
                 Spacer()
-                ShareLink(item: "Join my \(game.displayName) game on CruiseLAN: open Games, tap Join a Game with a Code, and enter \(shown).") {
-                    Label("Share", systemImage: "square.and.arrow.up")
+                ShareLink(
+                    item: InviteLink.url(for: code),
+                    subject: Text("Play \(game.displayName) with me"),
+                    message: Text("Join my \(game.displayName) game on CruiseLAN. Tap the link to jump in, or enter code \(shown).")
+                ) {
+                    Label("Share Invite", systemImage: "square.and.arrow.up")
                 }
                 .buttonStyle(.glass)
             }
         } header: {
             Label("Online game", systemImage: isConnected ? "globe" : "arrow.triangle.2.circlepath")
         } footer: {
-            Text("Anyone with CruiseLAN can join with this code, from any network or city. The game is saved online, so it keeps going even if someone's phone drops out.")
+            Text("Share the invite: one tap on the link opens CruiseLAN and joins this game, from any network or city. Without the app, the link shows how to get it. The game is saved online, so it keeps going even if someone's phone drops out.")
         }
     }
 }

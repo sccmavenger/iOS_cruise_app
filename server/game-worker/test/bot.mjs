@@ -1,6 +1,6 @@
 // A scripted second player for end-to-end tests with the app:
 //   node test/bot.mjs <CODE> [--leave-after N]
-//   node test/bot.mjs --host [game]        host an open game and start it when someone joins
+//   node test/bot.mjs --host [game] [--private]  host a game and start it when someone joins
 //   node test/bot.mjs --quickplay [game]   use Quick Play
 // Joins the room, then plays Tic-Tac-Toe or Connect Four whenever it's its turn (first free cell),
 // and votes for rematches. Reconnects like the app does, and keeps its seat in /tmp so a restarted
@@ -17,7 +17,7 @@ const saved = code ? `/tmp/cruiselan-bot-${code}.json` : null;
 let seat = saved && fs.existsSync(saved) ? JSON.parse(fs.readFileSync(saved, "utf8")) : null;
 if (!seat) {
   const post = (path, body) => fetch(`${BASE}${path}`, { method: "POST", body: JSON.stringify(body) }).then((r) => r.json());
-  seat = mode === "--host" ? await post("/v1/rooms", { game: gameArg, nickname: "RoboBob", open: true })
+  seat = mode === "--host" ? await post("/v1/rooms", { game: gameArg, nickname: "RoboBob", open: !process.argv.includes("--private") })
     : mode === "--quickplay" ? await post("/v1/quickplay", { game: gameArg, nickname: "RoboBob" })
     : await post(`/v1/rooms/${code}/join`, { nickname: "RoboBob" });
   if (seat.token) fs.writeFileSync(`/tmp/cruiselan-bot-${seat.code}.json`, JSON.stringify(seat));

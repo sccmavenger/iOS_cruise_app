@@ -289,6 +289,23 @@ async function openGames() {
   check("When its host leaves an open lobby, it drops off the list", !list.some((l) => l.code === fresh.code));
 }
 
+async function inviteLinks() {
+  const aasa = await (await fetch(`${BASE}/.well-known/apple-app-site-association`)).json();
+  const detail = aasa.applinks?.details?.[0];
+  check("The app-site association names the app and /join/* links", detail?.appIDs?.[0] === "CB4AAVWWUD.com.dannyguillory.cruiselan" && detail.components[0]["/"] === "/join/*");
+  const created = await api("/v1/rooms", { game: "connectFour", nickname: "Ann <b>" });
+  const info = await api(`/v1/rooms/${created.code}/info`);
+  check("Room info gives what an invite page needs", info.game === "connectFour" && info.host === "Ann <b>" && info.seats === 1 && info.phase === "lobby");
+  const page = await (await fetch(`${BASE}/join/${created.code}`)).text();
+  check("The invite page names the host and game, escapes the name, and opens the app with the code",
+    page.includes("Ann &lt;b&gt; invited you to play Connect Four") && page.includes(`cruiselan://join/${created.code}`) && page.includes("testflight.apple.com/join/"));
+  const gone = await (await fetch(`${BASE}/join/ZZZZZZZZ`)).text();
+  check("An unknown invite says so, with no Open button", gone.includes("This game has ended") && !gone.includes("cruiselan://join/"));
+  const host = await new Player(created, "Ann").connect();
+  host.send({ type: "leave" });
+  await sleep(300);
+}
+
 /** Slow (80 s): a phone that goes silent without closing shows as away; one that pings doesn't. */
 async function presence() {
   const [silent, pinger] = await room("ticTacToe", 2);
@@ -305,7 +322,7 @@ async function presence() {
 
 const phase = process.argv[2] ?? "all";
 try {
-  if (phase === "all") { await basics(); await lobbyHandover(); await turnIndependent(); await hiddenCards(); await openGames(); }
+  if (phase === "all") { await basics(); await lobbyHandover(); await turnIndependent(); await hiddenCards(); await openGames(); await inviteLinks(); }
   if (phase === "restart1") await restart1();
   if (phase === "restart2") await restart2();
   if (phase === "presence") await presence();

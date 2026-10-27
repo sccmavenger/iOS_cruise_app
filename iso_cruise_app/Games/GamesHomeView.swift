@@ -307,7 +307,8 @@ struct JoinOnlineSheet: View {
     @State private var code = ""
     @FocusState private var focused: Bool
 
-    private var cleaned: String { code.uppercased().filter { $0.isLetter || $0.isNumber } }
+    /// The code typed, or the one inside a pasted invite link.
+    private var cleaned: String { InviteLink.code(fromText: code) ?? "" }
 
     var body: some View {
         @Bindable var games = games
@@ -323,7 +324,7 @@ struct JoinOnlineSheet: View {
                         .onSubmit(join)
                         .accessibilityLabel("Invite code")
                 } footer: {
-                    Text("The host sees the code in their game's lobby. It's 8 letters and numbers.")
+                    Text("The host sees the code in their game's lobby. It's 8 letters and numbers. You can also paste an invite link here.")
                 }
                 Section {
                     Button(action: join) {
@@ -335,7 +336,7 @@ struct JoinOnlineSheet: View {
                             }
                         }
                     }
-                    .disabled(cleaned.count != 8 || games.isConnectingOnline)
+                    .disabled(cleaned.isEmpty || games.isConnectingOnline)
                 }
             }
             .navigationTitle("Join with a Code")
@@ -359,7 +360,7 @@ struct JoinOnlineSheet: View {
     }
 
     private func join() {
-        guard cleaned.count == 8 else { return }
+        guard !cleaned.isEmpty else { return }
         games.joinOnline(code: cleaned)
     }
 }

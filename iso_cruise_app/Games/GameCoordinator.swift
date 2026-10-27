@@ -1178,7 +1178,9 @@ final class GameCoordinator {
         pendingMoveId = nil
         pendingCloudMove = nil
         if previous?.isFinished == true, !view.isFinished { rematchVotes = [] }
-        snapshotDidChange(from: previous)
+        // The first state after joining or a relaunch isn't news: the game screen is opening
+        // anyway, so it doesn't announce "your turn" (that arrived as a banner on top of it).
+        if previous != nil { snapshotDidChange(from: previous) }
     }
 }
 

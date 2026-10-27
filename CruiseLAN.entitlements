@@ -7,5 +7,11 @@
 	     taps "Show Wi-Fi name". -->
 	<key>com.apple.developer.networking.wifi-info</key>
 	<true/>
+	<!-- Invite links (https://cruiselan-games.dguilloryjr.workers.dev/join/CODE) open the app
+	     straight into the game. The server serves the matching apple-app-site-association. -->
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>applinks:cruiselan-games.dguilloryjr.workers.dev</string>
+	</array>
 </dict>
 </plist>

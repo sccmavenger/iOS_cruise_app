@@ -8,6 +8,12 @@
 //   POST /v1/rooms/:code/join { nickname }    → same
 //   GET  /v1/lobbies[?game=]              → { lobbies: [{ code, game, host, seats, maxSeats }] } (open games)
 //   POST /v1/quickplay    { game, nickname, avoid? } → seat in the longest-waiting open game, or a new one
+//   GET  /v1/rooms/:code/info             → { game, host, seats, maxSeats, phase } for invite pages
+//
+// Invite links (one tap into a game)
+//   GET  /join/:code                      → opens the app straight into the game (Universal Link);
+//                                           without the app, a page with "Open" and "Get the app"
+//   GET  /.well-known/apple-app-site-association  → tells iOS that /join/* links belong to the app
 //   GET  /v1/rooms/:code/socket  (Authorization: Bearer <token>, WebSocket upgrade)
 //
 // WebSocket, client → server
@@ -42,6 +48,12 @@ const MAX_MESSAGE_BYTES = 16 * 1024;
 // closing (dead battery, lost signal) shows as away after this long.
 const PRESENCE_TIMEOUT = 75 * 1000;
 const CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"; // Crockford base32, no I L O U
+const APP_ID = "CB4AAVWWUD.com.dannyguillory.cruiselan";
+const GET_APP_URL = "https://testflight.apple.com/join/E7j3xJE7"; // Ring 1 public TestFlight link
+const GAME_NAMES = {
+  ticTacToe: "Tic-Tac-Toe", connectFour: "Connect Four", colorMatch: "Color Match", checkers: "Checkers",
+  chess: "Chess", spades: "Spades", tonk: "Tonk",
+};
 
 let rules = null;
 const getRules = () => (rules ??= createRules(rulesModule));
@@ -76,6 +88,44 @@ async function limited(limiter, key) {
 
 const directory = (env) => env.DIRECTORY.get(env.DIRECTORY.idFromName("global"));
 
+const escapeHTML = (text) => String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+/**
+ * Shown only when the app isn't installed (or the link is opened somewhere that doesn't hand
+ * Universal Links to apps). "Open in CruiseLAN" uses the app's own URL scheme with the code, so
+ * after installing, one more tap still lands in the game.
+ */
+async function invitePage(env, rawCode) {
+  const code = normalizeCode(rawCode);
+  let info = null;
+  if (code) {
+    const response = await env.ROOMS.get(env.ROOMS.idFromName(code)).fetch("https://room/info");
+    if (response.status === 200) info = await response.json();
+  }
+  const shown = code ? `${code.slice(0, 4)}-${code.slice(4)}` : "";
+  const game = info ? GAME_NAMES[info.game] ?? "a game" : "a game";
+  const title = info ? `${escapeHTML(info.host)} invited you to play ${game}` : code ? "This game has ended" : "Invite link not recognized";
+  const detail = !info ? "Ask for a new invite, or host your own game in CruiseLAN."
+    : info.phase !== "lobby" ? "This game has already started." : `${info.seats} of ${info.maxSeats} seats taken.`;
+  const open = info && info.phase === "lobby"
+    ? `<a class="button" href="cruiselan://join/${code}">Open in CruiseLAN</a>` : "";
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="apple-itunes-app" content="app-id=6823032794">
+<title>${title} · CruiseLAN</title>
+<style>body{font:17px/1.5 -apple-system,system-ui,sans-serif;max-width:480px;margin:48px auto;padding:0 24px;color:#0b1a3d;text-align:center}
+h1{font-size:26px;color:#05456f}.code{font:700 30px ui-monospace,monospace;letter-spacing:3px;margin:16px 0}
+.button{display:block;background:#05456f;color:#fff;text-decoration:none;padding:16px;border-radius:14px;font-weight:600;margin:12px 0}
+.secondary{background:#e8f1f7;color:#05456f}p{color:#3c4a66}</style></head><body>
+<h1>${title}</h1><p>${escapeHTML(detail)}</p>
+${shown ? `<div class="code">${shown}</div>` : ""}
+${open}
+<a class="button secondary" href="${GET_APP_URL}">Don't have CruiseLAN? Get it free</a>
+<p>After installing, come back and tap <b>Open in CruiseLAN</b>, or enter the code in Games › Join a Game with a Code.</p>
+</body></html>`;
+  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+}
+
 async function createRoom(env, game, nickname, open) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const code = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => CODE_ALPHABET[b & 31]).join("");
@@ -92,6 +142,10 @@ export default {
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter(Boolean);
     const ip = request.headers.get("cf-connecting-ip") ?? "local";
+    if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/.well-known/apple-app-site-association") {
+      return json({ applinks: { details: [{ appIDs: [APP_ID], components: [{ "/": "/join/*", comment: "Game invite links" }] }] } });
+    }
+    if (request.method === "GET" && parts[0] === "join" && parts.length === 2) return invitePage(env, parts[1]);
     if (parts[0] !== "v1") return json({ error: "notFound" }, 404);
 
     if (request.method === "GET" && parts[1] === "health" && parts.length === 2) return json({ ok: true, protocol: PROTOCOL });
@@ -137,6 +191,7 @@ export default {
         return room.fetch("https://room/join", { method: "POST", body: JSON.stringify({ nickname: body?.nickname }) });
       }
       if (request.method === "GET" && parts[3] === "socket") return room.fetch(new Request("https://room/socket", request));
+      if (request.method === "GET" && parts[3] === "info") return room.fetch("https://room/info");
     }
     return json({ error: "notFound" }, 404);
   },
@@ -209,6 +264,13 @@ export class Room extends DurableObject {
       this.broadcastRoster();
       await this.syncDirectory();
       return json({ code: room.code, seat, token, game: room.game, maxSeats: room.max_seats });
+    }
+    if (path === "/info") {
+      const room = this.room();
+      if (!room) return json({ error: "notFound" }, 404);
+      const seats = this.activeSeats();
+      const host = seats.find((s) => s.seat === room.organizer)?.nickname ?? "Someone";
+      return json({ game: room.game, host, seats: seats.length, maxSeats: room.max_seats, phase: room.phase });
     }
     if (path === "/socket") {
       if (request.headers.get("Upgrade") !== "websocket") return json({ error: "expectedWebSocket" }, 426);

@@ -18,6 +18,11 @@ final class AppState {
     var isMatchVisible = false
     /// Bumped to ask every open sheet to close, so the match screen can be presented.
     var sheetDismissals = 0
+    /// An invite link was opened; joined as soon as the app is ready (after onboarding).
+    var pendingInviteCode: String?
+    /// An invite arrived while the player is in a different game: the screen on top asks
+    /// before switching (an alert under the full-screen match would never show).
+    var switchToInviteCode: String?
 
     var openConversation: UUID? { chatPath.last }
 

@@ -4,6 +4,7 @@ import SwiftUI
 struct ContentView: View {
     @Environment(ProfileStore.self) private var profile
     @Environment(SessionManager.self) private var session
+    @Environment(AppState.self) private var app
 
     /// Shown once after onboarding. Presented *after* the permission prompts rather than
     /// before, so the live peer list on it can actually find people — an explanation of
@@ -25,6 +26,13 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showConnectGuide) {
             GetConnectedView()
+        }
+        // Invite links: the custom scheme, and Universal Links (which SwiftUI also delivers here).
+        .onOpenURL { url in
+            if let code = InviteLink.code(from: url) { app.pendingInviteCode = code }
+        }
+        .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+            if let url = activity.webpageURL, let code = InviteLink.code(from: url) { app.pendingInviteCode = code }
         }
         .onChange(of: profile.nickname, initial: true) { _, nickname in
             // The connect guide is about connecting to people for chat; games don't need it.
@@ -113,6 +121,13 @@ struct MainTabView: View {
         .onChange(of: app.isMatchVisible, initial: true) { _, visible in
             notifications.isMatchOnScreen = visible
         }
+        // An invite link: straight into that game. `initial`: it may have opened the app.
+        .onChange(of: app.pendingInviteCode, initial: true) { _, code in
+            guard let code else { return }
+            app.pendingInviteCode = nil
+            openInvite(code)
+        }
+        .modifier(InviteSwitchAlert(isOnTop: !app.isMatchVisible))
         // `initial`: a notification tapped while the app was closed sets the route before this view exists.
         .onChange(of: notifications.pendingRoute, initial: true) { _, route in
             guard let route else { return }
@@ -163,6 +178,26 @@ struct MainTabView: View {
         }
     }
 
+    /// Joins the game an invite link points to, or shows it if the player is already in it.
+    private func openInvite(_ code: String) {
+        if let lobby = games.lobby {
+            if lobby.cloudCode == code {
+                app.isMatchMinimized = false
+                presentMatchSoon()
+                return
+            }
+            if case .ended = lobby.phase {
+                games.dismissEndedMatch()
+            } else {
+                app.switchToInviteCode = code
+                return
+            }
+        }
+        app.selectedTab = .games
+        app.sheetDismissals += 1
+        games.joinOnline(code: code)
+    }
+
     /// Closes any open sheet, then shows the match. If UIKit drops the presentation (it does
     /// when another one is still closing), it's noticed and retried a few times.
     private func presentMatchSoon(attempt: Int = 0) {
@@ -182,6 +217,34 @@ struct MainTabView: View {
     private var gameInvitationTitle: String {
         guard let invitation = games.invitation else { return "" }
         return "\(invitation.host.labeledName) invited you to play \(invitation.payload.gameType.displayName)"
+    }
+}
+
+/// "Join another game?" for an invite that arrives mid-game. Attached both to the main screen and
+/// to the match (whichever is on top shows it).
+struct InviteSwitchAlert: ViewModifier {
+    let isOnTop: Bool
+    @Environment(GameCoordinator.self) private var games
+    @Environment(AppState.self) private var app
+
+    func body(content: Content) -> some View {
+        content.alert(
+            "Join another game?",
+            isPresented: Binding(
+                get: { isOnTop && app.switchToInviteCode != nil },
+                set: { if !$0 { app.switchToInviteCode = nil } }
+            )
+        ) {
+            Button("Leave and Join") {
+                guard let code = app.switchToInviteCode else { return }
+                app.switchToInviteCode = nil
+                games.leave()
+                games.joinOnline(code: code)
+            }
+            Button("Stay", role: .cancel) { app.switchToInviteCode = nil }
+        } message: {
+            Text("You're in a \(games.lobby?.gameType.displayName ?? "") game. Leaving it ends it for the other players if it's started.")
+        }
     }
 }
 
