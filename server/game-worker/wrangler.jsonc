@@ -1,0 +1,16 @@
+{
+  // CruiseLAN online games. Deploy: ./build-rules.sh && npx wrangler deploy
+  "name": "cruiselan-games",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "Room" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }],
+  "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
+  // Per-address limits: creating rooms, and guessing invite codes.
+  "ratelimits": [
+    { "name": "CREATE_LIMITER", "namespace_id": "4101", "simple": { "limit": 20, "period": 60 } },
+    { "name": "JOIN_LIMITER", "namespace_id": "4102", "simple": { "limit": 30, "period": 60 } }
+  ],
+  "observability": { "enabled": true }
+}

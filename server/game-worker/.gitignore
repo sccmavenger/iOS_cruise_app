@@ -1,0 +1,8 @@
+node_modules/
+.wrangler/
+src/rules.wasm
+swift/.build/
+# Copied from iso_cruise_app/Games by build-rules.sh
+swift/Sources/CruiseGameRules/*
+!swift/Sources/CruiseGameRules/Bridge.swift
+!swift/Sources/CruiseGameRules/GoldenTrace.swift

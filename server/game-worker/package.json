@@ -1,0 +1,15 @@
+{
+  "name": "cruiselan-games",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "./build-rules.sh",
+    "dev": "wrangler dev",
+    "deploy": "./build-rules.sh && wrangler deploy",
+    "test": "node test/scenarios.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.153.0",
+    "ws": "^8.22.0"
+  }
+}
