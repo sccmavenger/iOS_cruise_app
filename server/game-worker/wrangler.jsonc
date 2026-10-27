@@ -19,7 +19,9 @@
   // ship or hotel can share one public address; codes are 40-bit, so guessing stays hopeless.
   "ratelimits": [
     { "name": "CREATE_LIMITER", "namespace_id": "4101", "simple": { "limit": 60, "period": 60 } },
-    { "name": "JOIN_LIMITER", "namespace_id": "4102", "simple": { "limit": 120, "period": 60 } }
+    { "name": "JOIN_LIMITER", "namespace_id": "4102", "simple": { "limit": 120, "period": 60 } },
+    // Invite pages and room info say whether a code exists, so they're throttled too.
+    { "name": "INFO_LIMITER", "namespace_id": "4103", "simple": { "limit": 240, "period": 60 } }
   ],
   "observability": { "enabled": true }
 }

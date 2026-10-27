@@ -315,10 +315,10 @@ async function inviteLinks() {
   check("The app-site association names the app and /join/* links", detail?.appIDs?.[0] === "CB4AAVWWUD.com.dannyguillory.cruiselan" && detail.components[0]["/"] === "/join/*");
   const created = await api("/v1/rooms", { game: "connectFour", nickname: "Ann <b>" });
   const info = await api(`/v1/rooms/${created.code}/info`);
-  check("Room info gives what an invite page needs", info.game === "connectFour" && info.host === "Ann <b>" && info.seats === 1 && info.phase === "lobby");
+  check("Room info gives what an invite page needs", info.game === "connectFour" && info.host === undefined && info.seats === 1 && info.phase === "lobby");
   const page = await (await fetch(`${BASE}/join/${created.code}`)).text();
-  check("The invite page names the host and game, escapes the name, and opens the app with the code",
-    page.includes("Ann &lt;b&gt; invited you to play Connect Four") && page.includes(`cruiselan://join/${created.code}`) && page.includes("testflight.apple.com/join/"));
+  check("The invite page names the game (not the host, whose name is unfiltered here) and opens the app with the code",
+    page.includes("You're invited to play Connect Four") && !page.includes("Ann") && page.includes(`cruiselan://join/${created.code}`) && page.includes("testflight.apple.com/join/"));
   const gone = await (await fetch(`${BASE}/join/ZZZZZZZZ`)).text();
   check("An unknown invite says so, with no Open button", gone.includes("This game has ended") && !gone.includes("cruiselan://join/"));
   const host = await new Player(created, "Ann").connect();

@@ -873,6 +873,11 @@ final class GameCoordinator {
         // Call One!/Catch! race against turns by design, so they skip the revision check, and
         // a move based on the latest turn stays valid even if one of those landed meanwhile.
         let turnIndependent = GameEngine.isTurnIndependent(request.move)
+        // A board nobody has seen yet can't be the basis of a move: a modified app claiming a
+        // future revision would otherwise skip the check below.
+        guard (0...revision).contains(request.baseRevision) else {
+            return rejectMove(MoveErrorMessage.staleBoard, to: playerId)
+        }
         guard request.baseRevision == revision || request.baseRevision >= turnRevision || turnIndependent else {
             return rejectMove(MoveErrorMessage.staleBoard, to: playerId)
         }
@@ -1178,7 +1183,9 @@ final class GameCoordinator {
     }
 
     private func receiveCloudSnapshot(_ view: GameStateSnapshot, revision newRevision: Int) {
-        guard var lobby, newRevision > revision, view.gameType == lobby.gameType,
+        // The same structural checks as a snapshot from a phone host, so even a broken or
+        // impersonated server can't hand the game screens a board they'd crash on.
+        guard var lobby, newRevision > revision, view.gameType == lobby.gameType, view.isStructurallyValid,
               view.playerIds.contains(localId), Self.isAddressedToMe(view, localId: localId)
         else { return }
         if lobby.phase == .lobby { lobby.phase = .playing }

@@ -45,6 +45,19 @@ const HOUR = 3600 * 1000, DAY = 24 * HOUR;
 // move, ended games 30 days.
 const TTL = { lobby: DAY, playing: 7 * DAY, ended: 30 * DAY };
 const MAX_MESSAGE_BYTES = 16 * 1024;
+const MAX_BODY_BYTES = 2048;
+// Abuse limits. A player sends a few messages a minute (pings don't count: Cloudflare answers
+// them), so 40 in 10 s is a flood. A phone has one socket; two covers a reconnect overlap.
+const MESSAGE_LIMIT = { count: 40, windowMs: 10 * 1000 };
+const MAX_SOCKETS_PER_SEAT = 2;
+// A lobby seat whose player never connects is freed after this long, so nobody can block an
+// open game by taking its seats over HTTP and never showing up.
+const GHOST_SEAT_GRACE = 90 * 1000;
+// One address (a ship or hotel shares one) can list this many open games per game type, so a
+// single attacker can't fill the open list.
+const MAX_LISTED_PER_ADDRESS = 10;
+// Moves remembered for exactly-once retries. A retry comes within minutes, not thousands of moves later.
+const MOVES_KEPT = 2000;
 // A socket counts as connected only if it said something recently. Clients send "ping" every
 // 25 s; Cloudflare answers "pong" itself without waking the room. A phone that vanished without
 // closing (dead battery, lost signal) shows as away after this long.
@@ -61,7 +74,7 @@ let rules = null;
 const getRules = () => (rules ??= createRules(rulesModule));
 
 const json = (body, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff" } });
 const randomHex = (bytes) => [...crypto.getRandomValues(new Uint8Array(bytes))].map((b) => b.toString(16).padStart(2, "0")).join("");
 async function sha256(text) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
@@ -74,13 +87,40 @@ function normalizeCode(raw) {
 }
 /** The app filters nicknames too; the server only keeps them short and printable. */
 function cleanNickname(raw) {
-  const name = String(raw ?? "").replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, "").trim().slice(0, 20);
+  const name = Array.from(String(raw ?? "")
+    // Control, format (direction overrides, zero-width), private-use, unpaired surrogates and
+    // line separators can spoof or hide names. The zero-width joiner stays, for emoji.
+    .replace(/(?!\u200d)[\p{Cc}\p{Cf}\p{Co}\p{Cs}\p{Cn}\p{Zl}\p{Zp}]/gu, "")
+    .replace(/\s+/g, " ").trim()).slice(0, 20).join("").trim();
   return name || "Player";
 }
+/** Reads a small JSON body, stopping as soon as it's too big rather than buffering it all. */
 async function readJSON(request) {
-  const text = await request.text();
-  if (text.length > 2048) return null;
-  try { return JSON.parse(text); } catch { return null; }
+  if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY_BYTES || !request.body) return null;
+  const reader = request.body.getReader();
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > MAX_BODY_BYTES) { reader.cancel().catch(() => {}); return null; }
+    chunks.push(value);
+  }
+  const all = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { all.set(chunk, offset); offset += chunk.byteLength; }
+  try { return JSON.parse(new TextDecoder().decode(all)); } catch { return null; }
+}
+/**
+ * A label for the caller's address, so one address can't fill the open list. Keyed with a
+ * server secret (`wrangler secret put ADDRESS_KEY`): unlike a plain hash, it can't be turned
+ * back into the address by trying every one.
+ */
+async function addressKey(env, ip) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.ADDRESS_KEY ?? "dev-only"), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(ip));
+  return [...new Uint8Array(mac)].slice(0, 12).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 async function limited(limiter, key) {
   if (!limiter) return false; // binding absent (older wrangler dev): no limit
@@ -89,6 +129,12 @@ async function limited(limiter, key) {
 }
 
 const directory = (env) => env.DIRECTORY.get(env.DIRECTORY.idFromName("global"));
+
+// The invite page runs no script and can't be framed (clickjacking) or sniffed as another type.
+const PAGE_HEADERS = {
+  "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  "x-frame-options": "DENY", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer",
+};
 
 const escapeHTML = (text) => String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
@@ -106,7 +152,8 @@ async function invitePage(env, rawCode) {
   }
   const shown = code ? `${code.slice(0, 4)}-${code.slice(4)}` : "";
   const game = info ? GAME_NAMES[info.game] ?? "a game" : "a game";
-  const title = info ? `${escapeHTML(info.host)} invited you to play ${game}` : code ? "This game has ended" : "Invite link not recognized";
+  // The host's name isn't shown: it's chosen by whoever made the game, and this page is public.
+  const title = info ? `You're invited to play ${game}` : code ? "This game has ended" : "Invite link not recognized";
   const detail = !info ? "Ask for a new invite, or host your own game in CruiseLAN."
     : info.phase !== "lobby" ? "This game has already started." : `${info.seats} of ${info.maxSeats} seats taken.`;
   const open = info && info.phase === "lobby"
@@ -125,14 +172,14 @@ ${open}
 <a class="button secondary" href="${GET_APP_URL}">Don't have CruiseLAN? Get it free</a>
 <p>After installing, come back and tap <b>Open in CruiseLAN</b>, or enter the code in Games › Join a Game with a Code.</p>
 </body></html>`;
-  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", ...PAGE_HEADERS } });
 }
 
-async function createRoom(env, game, nickname, open) {
+async function createRoom(env, game, nickname, open, address) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const code = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => CODE_ALPHABET[b & 31]).join("");
     const response = await env.ROOMS.get(env.ROOMS.idFromName(code)).fetch("https://room/create", {
-      method: "POST", body: JSON.stringify({ code, game, nickname, open }),
+      method: "POST", body: JSON.stringify({ code, game, nickname, open, address }),
     });
     if (response.status !== 409) return response;
   }
@@ -147,7 +194,11 @@ export default {
     if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/.well-known/apple-app-site-association") {
       return json({ applinks: { details: [{ appIDs: [APP_ID], components: [{ "/": "/join/*", comment: "Game invite links" }] }] } });
     }
-    if (request.method === "GET" && parts[0] === "join" && parts.length === 2) return invitePage(env, parts[1]);
+    if (request.method === "GET" && parts[0] === "join" && parts.length === 2) {
+      // Each page tells whether a code exists, so it's throttled like joining.
+      if (await limited(env.INFO_LIMITER, ip)) return new Response("Too many requests. Wait a minute and try again.", { status: 429, headers: PAGE_HEADERS });
+      return invitePage(env, parts[1]);
+    }
     if (parts[0] !== "v1") return json({ error: "notFound" }, 404);
 
     if (request.method === "GET" && parts[1] === "health" && parts.length === 2) return json({ ok: true, protocol: PROTOCOL });
@@ -156,7 +207,7 @@ export default {
       if (await limited(env.CREATE_LIMITER, ip)) return json({ error: "rateLimited" }, 429);
       const body = await readJSON(request);
       if (!body || !GAMES[body.game]) return json({ error: "badRequest" }, 400);
-      return createRoom(env, body.game, body.nickname, body.open === true);
+      return createRoom(env, body.game, body.nickname, body.open === true, await addressKey(env, ip));
     }
 
     if (request.method === "GET" && parts[1] === "lobbies" && parts.length === 2) {
@@ -179,7 +230,7 @@ export default {
         });
         if (joined.status === 200) return joined;
       }
-      return createRoom(env, body.game, body.nickname, true);
+      return createRoom(env, body.game, body.nickname, true, await addressKey(env, ip));
     }
 
     if (parts[1] === "rooms" && parts.length === 4) {
@@ -193,7 +244,10 @@ export default {
         return room.fetch("https://room/join", { method: "POST", body: JSON.stringify({ nickname: body?.nickname }) });
       }
       if (request.method === "GET" && parts[3] === "socket") return room.fetch(new Request("https://room/socket", request));
-      if (request.method === "GET" && parts[3] === "info") return room.fetch("https://room/info");
+      if (request.method === "GET" && parts[3] === "info") {
+        if (await limited(env.INFO_LIMITER, ip)) return json({ error: "rateLimited" }, 429);
+        return room.fetch("https://room/info");
+      }
       if (request.method === "POST" && parts[3] === "leave") {
         return room.fetch("https://room/leave", { method: "POST", headers: { Authorization: request.headers.get("Authorization") ?? "" } });
       }
@@ -210,6 +264,10 @@ export class Room extends DurableObject {
     // Rooms created before a column existed get it here (fails harmlessly on a fresh object).
     try { this.sql.exec("ALTER TABLE room ADD COLUMN open INTEGER NOT NULL DEFAULT 0"); } catch {}
     try { this.sql.exec("ALTER TABLE seats ADD COLUMN removed INTEGER NOT NULL DEFAULT 0"); } catch {}
+    try { this.sql.exec("ALTER TABLE room ADD COLUMN address TEXT"); } catch {}
+    // Older seats count as connected, so they're never mistaken for ghosts.
+    try { this.sql.exec("ALTER TABLE seats ADD COLUMN joined_at INTEGER NOT NULL DEFAULT 0"); } catch {}
+    try { this.sql.exec("ALTER TABLE seats ADD COLUMN connected INTEGER NOT NULL DEFAULT 1"); } catch {}
   }
 
   /**
@@ -222,10 +280,11 @@ export class Room extends DurableObject {
         id INTEGER PRIMARY KEY CHECK (id = 1), code TEXT NOT NULL, game TEXT NOT NULL, phase TEXT NOT NULL,
         min_seats INTEGER NOT NULL, max_seats INTEGER NOT NULL, organizer TEXT NOT NULL, ended_message TEXT,
         turn_revision INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-        open INTEGER NOT NULL DEFAULT 0);
+        open INTEGER NOT NULL DEFAULT 0, address TEXT);
       CREATE TABLE IF NOT EXISTS seats (
         seat TEXT PRIMARY KEY, idx INTEGER NOT NULL, nickname TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
-        active INTEGER NOT NULL DEFAULT 1, rematch INTEGER NOT NULL DEFAULT 0, removed INTEGER NOT NULL DEFAULT 0);
+        active INTEGER NOT NULL DEFAULT 1, rematch INTEGER NOT NULL DEFAULT 0, removed INTEGER NOT NULL DEFAULT 0,
+        joined_at INTEGER NOT NULL DEFAULT 0, connected INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL, revision INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS moves (move_id TEXT PRIMARY KEY, seat TEXT NOT NULL, revision INTEGER NOT NULL, outcome TEXT NOT NULL, at INTEGER NOT NULL);
     `);
@@ -250,7 +309,7 @@ export class Room extends DurableObject {
   insertSeat(nickname, hash) {
     const next = this.sql.exec("SELECT COALESCE(MAX(idx) + 1, 0) AS n FROM seats").one().n;
     const seat = `seat${next}`;
-    this.sql.exec("INSERT INTO seats (seat, idx, nickname, token_hash) VALUES (?, ?, ?, ?)", seat, next, cleanNickname(nickname), hash);
+    this.sql.exec("INSERT INTO seats (seat, idx, nickname, token_hash, joined_at) VALUES (?, ?, ?, ?, ?)", seat, next, cleanNickname(nickname), hash, Date.now());
     return seat;
   }
 
@@ -266,10 +325,28 @@ export class Room extends DurableObject {
 
   /** Records activity and moves the expiry alarm to match the room's phase. */
   async touch() {
-    const now = Date.now();
-    this.sql.exec("UPDATE room SET updated_at = ? WHERE id = 1", now);
+    this.sql.exec("UPDATE room SET updated_at = ? WHERE id = 1", Date.now());
+    await this.scheduleAlarm();
+  }
+
+  /** The next thing the alarm has to do: free a ghost seat, or expire the room. */
+  async scheduleAlarm() {
     const room = this.room();
-    await this.ctx.storage.setAlarm((room.phase === "lobby" ? room.created_at : now) + TTL[room.phase]);
+    const expires = (room.phase === "lobby" ? room.created_at : room.updated_at) + TTL[room.phase];
+    // The same seats freeGhostSeats frees (never the host), so the alarm can't keep firing for nothing.
+    const ghost = room.phase === "lobby"
+      ? this.sql.exec("SELECT MIN(joined_at) AS t FROM seats WHERE active = 1 AND connected = 0 AND seat != ?", room.organizer).one().t : null;
+    const at = ghost == null ? expires : Math.min(expires, ghost + GHOST_SEAT_GRACE + 1000);
+    await this.ctx.storage.setAlarm(Math.max(at, Date.now() + 1000));
+  }
+
+  /** Frees lobby seats whose players never connected. Returns whether any were freed. */
+  freeGhostSeats() {
+    const room = this.room();
+    if (room?.phase !== "lobby") return false;
+    const freed = this.sql.exec("UPDATE seats SET active = 0 WHERE active = 1 AND connected = 0 AND seat != ? AND joined_at < ?",
+      room.organizer, Date.now() - GHOST_SEAT_GRACE).rowsWritten;
+    return freed > 0;
   }
 
   // MARK: HTTP from the Worker
@@ -278,13 +355,13 @@ export class Room extends DurableObject {
     const path = new URL(request.url).pathname;
     if (path === "/create") {
       if (this.room()) return json({ error: "codeTaken" }, 409);
-      const { code, game, nickname, open } = await request.json();
+      const { code, game, nickname, open, address } = await request.json();
       const { token, hash } = await this.newToken();
       if (this.room()) return json({ error: "codeTaken" }, 409);
       this.createSchema();
       const now = Date.now();
-      this.sql.exec("INSERT INTO room (id, code, game, phase, min_seats, max_seats, organizer, created_at, updated_at, open) VALUES (1, ?, ?, 'lobby', ?, ?, 'seat0', ?, ?, ?)",
-        code, game, GAMES[game].min, GAMES[game].max, now, now, open ? 1 : 0);
+      this.sql.exec("INSERT INTO room (id, code, game, phase, min_seats, max_seats, organizer, created_at, updated_at, open, address) VALUES (1, ?, ?, 'lobby', ?, ?, 'seat0', ?, ?, ?, ?)",
+        code, game, GAMES[game].min, GAMES[game].max, now, now, open ? 1 : 0, address ?? null);
       const seat = this.insertSeat(nickname, hash);
       await this.touch();
       await this.syncDirectory();
@@ -297,18 +374,19 @@ export class Room extends DurableObject {
       const room = this.room();
       if (!room) return this.notFound();
       if (room.phase !== "lobby") return json({ error: "alreadyStarted" }, 409);
+      this.freeGhostSeats();
       if (this.activeSeats().length >= room.max_seats) return json({ error: "full" }, 409);
       const seat = this.insertSeat(nickname, hash);
       this.broadcastRoster();
+      await this.scheduleAlarm();
       await this.syncDirectory();
       return json({ code: room.code, seat, token, game: room.game, maxSeats: room.max_seats });
     }
     if (path === "/info") {
       const room = this.room();
       if (!room) return this.notFound();
-      const seats = this.activeSeats();
-      const host = seats.find((s) => s.seat === room.organizer)?.nickname ?? "Someone";
-      return json({ game: room.game, host, seats: seats.length, maxSeats: room.max_seats, phase: room.phase });
+      // No names: anyone holding a code can ask, and a private game's players are nobody else's business.
+      return json({ game: room.game, seats: this.activeSeats().length, maxSeats: room.max_seats, phase: room.phase });
     }
     if (path === "/socket") {
       if (request.headers.get("Upgrade") !== "websocket") return json({ error: "expectedWebSocket" }, 426);
@@ -321,7 +399,13 @@ export class Room extends DurableObject {
       const pair = new WebSocketPair();
       // Hibernation API: the room sleeps between moves and keeps the sockets; the tag is the seat.
       this.ctx.acceptWebSocket(pair[1], [row.seat]);
-      pair[1].serializeAttachment({ lastSeen: Date.now() });
+      const now = Date.now();
+      pair[1].serializeAttachment({ lastSeen: now, openedAt: now, windowStart: now, count: 0 });
+      this.sql.exec("UPDATE seats SET connected = 1 WHERE seat = ?", row.seat);
+      // A seat gets a socket or two (a reconnect can overlap the old one), never a crowd: the
+      // oldest extra ones are closed, so nobody can multiply what the room sends.
+      const mine = this.ctx.getWebSockets(row.seat).sort((x, y) => (y.deserializeAttachment()?.openedAt ?? 0) - (x.deserializeAttachment()?.openedAt ?? 0));
+      for (const old of mine.slice(MAX_SOCKETS_PER_SEAT)) { try { old.close(4002, "replaced"); } catch {} }
       this.broadcastRoster();
       await this.syncDirectory();
       return new Response(null, { status: 101, webSocket: pair[0] });
@@ -341,7 +425,16 @@ export class Room extends DurableObject {
   async webSocketMessage(ws, message) {
     if (typeof message !== "string" || message.length > MAX_MESSAGE_BYTES) return this.send(ws, { type: "error", error: "tooLarge" });
     const [seat] = this.ctx.getTags(ws);
-    ws.serializeAttachment({ lastSeen: Date.now() });
+    const now = Date.now(), seen = ws.deserializeAttachment() ?? {};
+    const fresh = now - (seen.windowStart ?? 0) > MESSAGE_LIMIT.windowMs;
+    const count = (fresh ? 0 : seen.count ?? 0) + 1;
+    ws.serializeAttachment({ ...seen, lastSeen: now, windowStart: fresh ? now : seen.windowStart, count });
+    // A flood: drop the connection. The app reconnects by itself, so a real player loses nothing.
+    if (count > MESSAGE_LIMIT.count) {
+      this.send(ws, { type: "error", error: "rateLimited" });
+      try { ws.close(1008, "too many messages"); } catch {}
+      return;
+    }
     let msg;
     try { msg = JSON.parse(message); } catch { return this.send(ws, { type: "error", error: "badJSON" }); }
     const room = this.room();
@@ -435,19 +528,25 @@ export class Room extends DurableObject {
     if (typeof moveId !== "string" || moveId.length === 0 || moveId.length > 64 || !Number.isInteger(baseRevision) || typeof move !== "object" || move === null) {
       return this.send(ws, { type: "error", error: "badMove" });
     }
-    // Exactly-once: a retried move id gets its original answer and changes nothing.
-    const seen = this.sql.exec("SELECT outcome FROM moves WHERE move_id = ?", moveId).toArray()[0];
+    // Exactly-once: a retried move id gets its original answer and changes nothing. Ids are
+    // per seat, so nobody can collide with, or read the answer to, someone else's move.
+    const key = `${seat}:${moveId}`;
+    const seen = this.sql.exec("SELECT outcome FROM moves WHERE move_id = ?", key).toArray()[0];
     if (seen) return this.send(ws, { type: "result", moveId, duplicate: true, ...JSON.parse(seen.outcome) });
 
     const room = this.room(), current = this.current();
-    const record = (outcome, revision) =>
-      this.sql.exec("INSERT INTO moves (move_id, seat, revision, outcome, at) VALUES (?, ?, ?, ?, ?)", moveId, seat, revision, JSON.stringify(outcome), Date.now());
+    const record = (outcome, revision) => {
+      this.sql.exec("INSERT INTO moves (move_id, seat, revision, outcome, at) VALUES (?, ?, ?, ?, ?)", key, seat, revision, JSON.stringify(outcome), Date.now());
+      this.sql.exec("DELETE FROM moves WHERE rowid <= (SELECT MAX(rowid) FROM moves) - ?", MOVES_KEPT);
+    };
     const refuse = (error, message) => {
       const outcome = { ok: false, error, message, revision: current?.revision ?? -1 };
       record(outcome, outcome.revision);
       this.send(ws, { type: "result", moveId, ...outcome });
     };
     if (room.phase !== "playing" || !current) return refuse("notPlaying", "This game isn't in progress.");
+    // A move can't be based on a board nobody has seen yet (that would dodge the check below).
+    if (baseRevision > current.revision || baseRevision < 0) return refuse("staleBoard", "The board changed before your move arrived. Try again.");
 
     const result = getRules().call({ op: "apply", state: JSON.parse(current.json), seat, move });
     // Same rule as a phone host: a move must be based on the latest turn. Call One!, Catch! and
@@ -504,8 +603,9 @@ export class Room extends DurableObject {
       if (remaining.length === 0) {
         this.sql.exec("UPDATE room SET phase = 'ended', ended_message = ? WHERE id = 1", "Everyone left the game.");
       } else if (seat === room.organizer) {
-        // The earliest remaining player becomes the host.
-        this.sql.exec("UPDATE room SET organizer = ? WHERE id = 1", remaining[0].seat);
+        // The earliest remaining player who has actually connected becomes the host.
+        const next = this.sql.exec("SELECT seat FROM seats WHERE active = 1 ORDER BY connected DESC, idx LIMIT 1").one().seat;
+        this.sql.exec("UPDATE room SET organizer = ? WHERE id = 1", next);
       }
     } else if (room.phase === "playing") {
       this.sql.exec("UPDATE room SET phase = 'ended', ended_message = ? WHERE id = 1", `${name} left the game. The match has ended.`);
@@ -544,15 +644,19 @@ export class Room extends DurableObject {
     const host = seats.find((s) => s.seat === room.organizer)?.nickname ?? "Player";
     await directory(this.env).fetch(listed ? "https://dir/upsert" : "https://dir/remove", {
       method: "POST",
-      body: JSON.stringify({ code: room.code, game: room.game, host, seats: seats.length, maxSeats: room.max_seats, createdAt: room.created_at }),
+      body: JSON.stringify({ code: room.code, game: room.game, host, seats: seats.length, maxSeats: room.max_seats, createdAt: room.created_at, address: room.address }),
     });
   }
 
   async alarm() {
     const room = this.room();
     if (!room) return;
+    if (this.freeGhostSeats()) {
+      this.broadcastRoster();
+      await this.syncDirectory();
+    }
     const expires = (room.phase === "lobby" ? room.created_at : room.updated_at) + TTL[room.phase];
-    if (Date.now() < expires) return this.ctx.storage.setAlarm(expires);
+    if (Date.now() < expires) return this.scheduleAlarm();
     if (room.open === 1 && this.env.DIRECTORY) {
       await directory(this.env).fetch("https://dir/remove", { method: "POST", body: JSON.stringify({ code: room.code }) });
     }
@@ -574,15 +678,22 @@ export class LobbyDirectory extends DurableObject {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS lobbies (
       code TEXT PRIMARY KEY, game TEXT NOT NULL, host TEXT NOT NULL, seats INTEGER NOT NULL,
       max_seats INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`);
+    try { this.sql.exec("ALTER TABLE lobbies ADD COLUMN address TEXT"); } catch {}
   }
 
   async fetch(request) {
     const url = new URL(request.url);
     if (url.pathname === "/upsert") {
       const l = await request.json();
-      this.sql.exec(`INSERT INTO lobbies (code, game, host, seats, max_seats, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+      // One address can't fill the list: past its share for this game, its lobbies are code-only.
+      const others = l.address ? this.sql.exec("SELECT COUNT(*) AS n FROM lobbies WHERE address = ? AND game = ? AND code != ?", l.address, l.game, l.code).one().n : 0;
+      if (others >= MAX_LISTED_PER_ADDRESS) {
+        this.sql.exec("DELETE FROM lobbies WHERE code = ?", l.code);
+        return json({ ok: true, listed: false });
+      }
+      this.sql.exec(`INSERT INTO lobbies (code, game, host, seats, max_seats, created_at, updated_at, address) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(code) DO UPDATE SET host = excluded.host, seats = excluded.seats, updated_at = excluded.updated_at`,
-        l.code, l.game, l.host, l.seats, l.maxSeats, l.createdAt, Date.now());
+        l.code, l.game, l.host, l.seats, l.maxSeats, l.createdAt, Date.now(), l.address ?? null);
       return json({ ok: true });
     }
     if (url.pathname === "/remove") {

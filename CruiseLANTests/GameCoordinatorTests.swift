@@ -236,6 +236,16 @@ struct GameCoordinatorTests {
         #expect(guest.games.notice == MoveErrorMessage.staleBoard)
     }
 
+    @Test("A move claiming a revision nobody has seen yet is rejected")
+    func futureMoveRequest() throws {
+        let lobbyId = try startTicTacToe()
+        host.games.play(.ticTacToe(cell: 0))
+        let forged = MoveRequestPayload(moveId: UUID(), baseRevision: 1_000_000, move: .ticTacToe(cell: 4))
+        guest.session.send(.moveRequest(forged), sessionId: lobbyId, to: [host.id])
+        #expect(host.games.revision == 1)
+        #expect(guest.games.notice == MoveErrorMessage.staleBoard)
+    }
+
     @Test("Older snapshot revisions are ignored by clients")
     func staleSnapshotIgnored() throws {
         let lobbyId = try startTicTacToe()
