@@ -13,5 +13,9 @@
 	<array>
 		<string>applinks:cruiselan-games.dguilloryjr.workers.dev</string>
 	</array>
+	<!-- Push notifications from the online game service (someone joined, your turn). Xcode
+	     signs App Store and TestFlight builds with "production". -->
+	<key>aps-environment</key>
+	<string>development</string>
 </dict>
 </plist>

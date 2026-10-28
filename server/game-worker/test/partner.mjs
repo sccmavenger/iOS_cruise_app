@@ -1,6 +1,7 @@
 // A scripted partner for testing the app by hand or in the simulator. Plays any game.
 //   node test/partner.mjs --host GAME [--private] [--bots N] [--kick-after S]
-//   node test/partner.mjs --join CODE [--leave-after-moves N]
+//   node test/partner.mjs --join CODE [--leave-after-moves N] [--think S]
+// --think S: wait S seconds before each move (time to put the app away and see a turn notification).
 // --bots N: N more scripted players join too (for 3-4 player games).
 // --kick-after S: as host, remove the first non-scripted player S seconds after they join.
 import WebSocket from "ws";
@@ -49,7 +50,7 @@ function play(seatInfo, name, { isHost, expected }) {
           log(name, "round over at revision", revision);
           setTimeout(() => ws.send(JSON.stringify({ type: "rematch" })), 1500);
         }
-        setTimeout(act, 1200);
+        setTimeout(act, Number(arg("--think", 1.2)) * 1000);
       }
     });
     const act = () => {

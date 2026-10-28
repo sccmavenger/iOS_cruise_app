@@ -34,10 +34,10 @@ final class AppState {
 
 /// Local notifications for new messages and "your turn", plus the unread chat count.
 ///
-/// Everything is local to the device: CruiseLAN has no server, so notifications are
-/// posted by the app itself, either while it's running or when a friend's phone wakes
-/// it with a Bluetooth nudge (see `Nudge`). Banners are skipped for whatever is
-/// already on screen.
+/// Most are posted by the app itself, while it's running or when a friend's phone wakes it
+/// with a Bluetooth nudge (see `Nudge`). Online games also send push notifications from the
+/// game service while the app isn't open (see `PushRegistration`); those open the game.
+/// Banners are skipped for whatever is already on screen.
 @Observable
 final class NotificationManager: NSObject {
     enum Route: Equatable {
@@ -132,9 +132,13 @@ final class NotificationManager: NSObject {
 }
 
 extension NotificationManager: UNUserNotificationCenterDelegate {
-    /// Banners are filtered when posted, so anything posted while the app is open should show.
+    /// Game notifications aren't news while the game is on screen: a push sent while the player
+    /// was away, or a "your turn" posted while the app was still coming back to the foreground
+    /// (it checks the screen when posted, and the screen wasn't up yet).
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        [.banner, .list, .sound]
+        let isGame = notification.request.content.userInfo["route"] as? String == "game"
+        let watching = await MainActor.run { self.isMatchOnScreen }
+        return isGame && watching ? [] : [.banner, .list, .sound]
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {

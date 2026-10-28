@@ -6,3 +6,4 @@ swift/.build/
 swift/Sources/CruiseGameRules/*
 !swift/Sources/CruiseGameRules/Bridge.swift
 !swift/Sources/CruiseGameRules/GoldenTrace.swift
+.dev.vars

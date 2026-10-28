@@ -24,6 +24,10 @@
 //   { type: "move", moveId, baseRevision, move }
 //   { type: "rematch" } | { type: "leave" } | { type: "ping", t }
 //   { type: "kick", seat }                  organizer removes a player before the game starts
+//   { type: "push", token, sandbox }        this seat's APNs device token ("" clears it), so the
+//                                           seat gets notifications while the app isn't open
+//   { type: "away" }                        the app left the screen: counts as not connected (and
+//                                           gets notifications) until it says anything else
 //   "ping" (plain text, every 25 s): answered "pong" by Cloudflare without waking the room; it keeps
 //   the seat marked as connected
 // server → client
@@ -56,6 +60,11 @@ const GHOST_SEAT_GRACE = 90 * 1000;
 // One address (a ship or hotel shares one) can list this many open games per game type, so a
 // single attacker can't fill the open list.
 const MAX_LISTED_PER_ADDRESS = 10;
+// Push notifications (APNs), for players whose app isn't on screen. Never more than one of a
+// kind per seat this often, so joining and leaving over and over can't spam anyone.
+const APNS = { production: "https://api.push.apple.com", sandbox: "https://api.sandbox.push.apple.com" };
+const APNS_TOPIC = "com.dannyguillory.cruiselan";
+const PUSH_THROTTLE_MS = 10 * 1000;
 // Moves remembered for exactly-once retries. A retry comes within minutes, not thousands of moves later.
 const MOVES_KEPT = 2000;
 // A socket counts as connected only if it said something recently. Clients send "ping" every
@@ -175,6 +184,48 @@ ${open}
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", ...PAGE_HEADERS } });
 }
 
+// MARK: APNs
+
+const b64url = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const b64json = (value) => b64url(new TextEncoder().encode(JSON.stringify(value)));
+let apnsJWT = null; // { token, at }: Apple wants a fresh one at least hourly, and not more than every 20 min
+
+/** The provider token APNs expects: an ES256 JWT signed with the team's push key (secret APNS_KEY). */
+async function apnsAuthorization(env) {
+  if (apnsJWT && Date.now() - apnsJWT.at < 40 * 60 * 1000) return apnsJWT.token;
+  const der = Uint8Array.from(atob(env.APNS_KEY.replace(/-----[^-]+-----/g, "").replace(/\\n|\s/g, "")), (c) => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey("pkcs8", der, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  const signed = `${b64json({ alg: "ES256", kid: env.APNS_KEY_ID })}.${b64json({ iss: env.APNS_TEAM_ID, iat: Math.floor(Date.now() / 1000) })}`;
+  const signature = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, new TextEncoder().encode(signed));
+  apnsJWT = { token: `${signed}.${b64url(signature)}`, at: Date.now() };
+  return apnsJWT.token;
+}
+
+/**
+ * Sends one alert. Returns "gone" when Apple says the token is dead (app deleted, notifications
+ * reset), so the caller forgets it. The text never contains player names: names are filtered
+ * by the app, and a notification is shown by iOS without the app's filter.
+ */
+async function sendPush(env, { token, sandbox }, { title, body, collapse, code }) {
+  if (!env.APNS_KEY) return "off";
+  const base = env.APNS_MOCK ?? (sandbox ? APNS.sandbox : APNS.production);
+  const response = await fetch(`${base}/3/device/${token}`, {
+    method: "POST",
+    headers: {
+      authorization: `bearer ${await apnsAuthorization(env)}`, "apns-topic": APNS_TOPIC, "apns-push-type": "alert",
+      "apns-priority": "10", "apns-expiration": String(Math.floor(Date.now() / 1000) + 3600),
+      // Same id as the app's own "turn" notification, so the two replace each other.
+      ...(collapse ? { "apns-collapse-id": collapse } : {}),
+    },
+    body: JSON.stringify({ aps: { alert: { title, body }, sound: "default", "thread-id": "game" }, route: "game", code }),
+  });
+  if (response.ok) return "sent";
+  if (response.status === 410) return "gone";
+  const reason = (await response.json().catch(() => ({}))).reason ?? "";
+  if (reason === "BadDeviceToken" || reason === "DeviceTokenNotForTopic") return "gone";
+  return `failed ${response.status} ${reason}`;
+}
+
 async function createRoom(env, game, nickname, open, address) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const code = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => CODE_ALPHABET[b & 31]).join("");
@@ -268,6 +319,10 @@ export class Room extends DurableObject {
     // Older seats count as connected, so they're never mistaken for ghosts.
     try { this.sql.exec("ALTER TABLE seats ADD COLUMN joined_at INTEGER NOT NULL DEFAULT 0"); } catch {}
     try { this.sql.exec("ALTER TABLE seats ADD COLUMN connected INTEGER NOT NULL DEFAULT 1"); } catch {}
+    try { this.sql.exec("ALTER TABLE seats ADD COLUMN push_token TEXT"); } catch {}
+    try { this.sql.exec("ALTER TABLE seats ADD COLUMN push_sandbox INTEGER NOT NULL DEFAULT 0"); } catch {}
+    try { this.sql.exec("ALTER TABLE room ADD COLUMN awaiting TEXT"); } catch {}
+    this.pushedAt = new Map(); // "seat|kind" → time; lost when the room sleeps, which is fine
   }
 
   /**
@@ -280,11 +335,12 @@ export class Room extends DurableObject {
         id INTEGER PRIMARY KEY CHECK (id = 1), code TEXT NOT NULL, game TEXT NOT NULL, phase TEXT NOT NULL,
         min_seats INTEGER NOT NULL, max_seats INTEGER NOT NULL, organizer TEXT NOT NULL, ended_message TEXT,
         turn_revision INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-        open INTEGER NOT NULL DEFAULT 0, address TEXT);
+        open INTEGER NOT NULL DEFAULT 0, address TEXT, awaiting TEXT);
       CREATE TABLE IF NOT EXISTS seats (
         seat TEXT PRIMARY KEY, idx INTEGER NOT NULL, nickname TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
         active INTEGER NOT NULL DEFAULT 1, rematch INTEGER NOT NULL DEFAULT 0, removed INTEGER NOT NULL DEFAULT 0,
-        joined_at INTEGER NOT NULL DEFAULT 0, connected INTEGER NOT NULL DEFAULT 0);
+        joined_at INTEGER NOT NULL DEFAULT 0, connected INTEGER NOT NULL DEFAULT 0,
+        push_token TEXT, push_sandbox INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL, revision INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS moves (move_id TEXT PRIMARY KEY, seat TEXT NOT NULL, revision INTEGER NOT NULL, outcome TEXT NOT NULL, at INTEGER NOT NULL);
     `);
@@ -380,6 +436,12 @@ export class Room extends DurableObject {
       this.broadcastRoster();
       await this.scheduleAlarm();
       await this.syncDirectory();
+      // The host who shared a link and put the phone away hears that someone came.
+      const count = this.activeSeats().length, name = GAME_NAMES[room.game];
+      this.notify(room.organizer, count >= room.max_seats
+        ? { kind: "lobby", title: `Your ${name} game is full`, body: "Everyone's here. Tap to start the game." }
+        : { kind: "lobby", title: `Someone joined your ${name} game`,
+            body: count >= room.min_seats ? `${count} of ${room.max_seats} players. Tap to start, or wait for more.` : `${count} of ${room.max_seats} players.` });
       return json({ code: room.code, seat, token, game: room.game, maxSeats: room.max_seats });
     }
     if (path === "/info") {
@@ -400,7 +462,7 @@ export class Room extends DurableObject {
       // Hibernation API: the room sleeps between moves and keeps the sockets; the tag is the seat.
       this.ctx.acceptWebSocket(pair[1], [row.seat]);
       const now = Date.now();
-      pair[1].serializeAttachment({ lastSeen: now, openedAt: now, windowStart: now, count: 0 });
+      pair[1].serializeAttachment({ lastSeen: now, openedAt: now, windowStart: now, count: 0, away: false });
       this.sql.exec("UPDATE seats SET connected = 1 WHERE seat = ?", row.seat);
       // A seat gets a socket or two (a reconnect can overlap the old one), never a crowd: the
       // oldest extra ones are closed, so nobody can multiply what the room sends.
@@ -439,6 +501,13 @@ export class Room extends DurableObject {
     try { msg = JSON.parse(message); } catch { return this.send(ws, { type: "error", error: "badJSON" }); }
     const room = this.room();
     if (!room) return ws.close(4404, "room expired");
+    // Away (the app left the screen) until this socket says anything else.
+    const away = msg?.type === "away";
+    if (away !== (seen.away === true)) {
+      ws.serializeAttachment({ ...ws.deserializeAttachment(), away });
+      this.broadcastRoster();
+      await this.syncDirectory();
+    }
     switch (msg.type) {
       case "ping": return this.send(ws, { type: "pong", t: msg.t });
       case "resume": return this.resume(ws, seat);
@@ -447,6 +516,8 @@ export class Room extends DurableObject {
       case "rematch": return this.rematch(seat);
       case "leave": return this.leave(seat);
       case "kick": return this.kick(ws, seat, msg.seat);
+      case "away": case "here": return;
+      case "push": return this.registerPush(ws, seat, msg);
       default: return this.send(ws, { type: "error", error: "unknownType" });
     }
   }
@@ -467,7 +538,7 @@ export class Room extends DurableObject {
   /** Everyone's view of the table: who's seated, who's connected, the phase, rematch votes. */
   rosterFor(seat, closing) {
     const room = this.room();
-    const connected = new Set(this.ctx.getWebSockets().filter((s) => s !== closing && this.isLive(s)).flatMap((s) => this.ctx.getTags(s)));
+    const connected = new Set(this.ctx.getWebSockets().filter((s) => s !== closing && this.isPresent(s)).flatMap((s) => this.ctx.getTags(s)));
     const seats = this.activeSeats();
     return {
       type: "roster", protocol: PROTOCOL, code: room.code, game: room.game, phase: room.phase,
@@ -481,6 +552,49 @@ export class Room extends DurableObject {
     const pinged = this.ctx.getWebSocketAutoResponseTimestamp(ws)?.getTime() ?? 0;
     const spoke = ws.deserializeAttachment()?.lastSeen ?? 0;
     return Date.now() - Math.max(pinged, spoke) < PRESENCE_TIMEOUT;
+  }
+
+  /** Connected and on screen: the app is open on this game. */
+  isPresent(ws) { return this.isLive(ws) && ws.deserializeAttachment()?.away !== true; }
+
+  /** Stores (or clears) the seat's device token. Only ever used for this room's notifications. */
+  registerPush(ws, seat, { token, sandbox }) {
+    console.log(JSON.stringify({ pushToken: token ? "registered" : "cleared", sandbox: sandbox === true }));
+    if (token === "") return this.sql.exec("UPDATE seats SET push_token = NULL WHERE seat = ?", seat);
+    if (typeof token !== "string" || !/^[0-9a-fA-F]{64,200}$/.test(token)) return this.send(ws, { type: "error", error: "badToken" });
+    this.sql.exec("UPDATE seats SET push_token = ?, push_sandbox = ? WHERE seat = ?", token.toLowerCase(), sandbox === true ? 1 : 0, seat);
+  }
+
+  /**
+   * Notifies a seat whose app isn't on this game right now (away, closed, or offline), if it gave
+   * us a device token. Sent in the background, so nothing waits on Apple.
+   */
+  notify(seat, { kind, title, body }) {
+    if (this.ctx.getWebSockets(seat).some((s) => this.isPresent(s))) return;
+    const row = this.sql.exec("SELECT push_token, push_sandbox FROM seats WHERE seat = ? AND active = 1", seat).toArray()[0];
+    if (!row?.push_token) return;
+    const key = `${seat}|${kind}`, now = Date.now();
+    if (now - (this.pushedAt.get(key) ?? 0) < PUSH_THROTTLE_MS) return;
+    this.pushedAt.set(key, now);
+    const code = this.room().code;
+    const sending = (sendPush(this.env, { token: row.push_token, sandbox: row.push_sandbox === 1 }, { title, body, collapse: kind, code })
+      .then((outcome) => {
+        // Visible in the Worker's logs (wrangler tail); never the token itself.
+        console.log(JSON.stringify({ push: kind, sandbox: row.push_sandbox === 1, outcome }));
+        if (outcome === "gone") this.sql.exec("UPDATE seats SET push_token = NULL WHERE seat = ? AND push_token = ?", seat, row.push_token);
+      })
+      .catch((e) => console.log(JSON.stringify({ push: kind, outcome: `error ${e.message}` }))));
+    this.ctx.waitUntil?.(sending);
+  }
+
+  /** Tells players who became "up" (and aren't looking) that it's their turn. */
+  notifyTurns(awaiting, except) {
+    const before = new Set(JSON.parse(this.room().awaiting ?? "[]"));
+    this.sql.exec("UPDATE room SET awaiting = ? WHERE id = 1", JSON.stringify(awaiting ?? []));
+    const name = GAME_NAMES[this.room().game];
+    for (const seat of awaiting ?? []) {
+      if (seat !== except && !before.has(seat)) this.notify(seat, { kind: "turn", title: `Your turn in ${name}`, body: "Tap to make your move." });
+    }
   }
 
   broadcastRoster(closing) {
@@ -522,6 +636,12 @@ export class Room extends DurableObject {
     await this.syncDirectory();
     this.broadcastRoster();
     this.broadcastViews(result.views, 0);
+    const name = GAME_NAMES[room.game];
+    for (const s of seats) {
+      if (s.seat !== seat && !result.awaiting.includes(s.seat)) this.notify(s.seat, { kind: "start", title: `Your ${name} game started`, body: "Tap to watch the table." });
+    }
+    this.sql.exec("UPDATE room SET awaiting = '[]' WHERE id = 1");
+    this.notifyTurns(result.awaiting, seat);
   }
 
   async move(ws, seat, { moveId, baseRevision, move }) {
@@ -568,6 +688,11 @@ export class Room extends DurableObject {
     await this.touch();
     this.send(ws, { type: "result", moveId, ok: true, revision: next });
     this.broadcastViews(result.views, next);
+    if (!result.turnIndependent) this.notifyTurns(result.finished ? [] : result.awaiting, seat);
+    if (result.finished) {
+      const name = GAME_NAMES[room.game];
+      for (const s of this.activeSeats()) if (s.seat !== seat) this.notify(s.seat, { kind: "turn", title: `${name}: that round is over`, body: "Tap to see how it ended." });
+    }
   }
 
   async rematch(seat) {
@@ -589,8 +714,12 @@ export class Room extends DurableObject {
       await this.touch();
       this.broadcastRoster();
       this.broadcastViews(result.views, next);
+      this.sql.exec("UPDATE room SET awaiting = '[]' WHERE id = 1");
+      this.notifyTurns(result.awaiting, seat);
     } else {
       this.broadcastRoster();
+      const name = GAME_NAMES[room.game];
+      for (const s of seats) if (!s.rematch) this.notify(s.seat, { kind: "rematch", title: `Rematch in ${name}?`, body: "Someone wants to play again. Tap to answer." });
     }
   }
 
@@ -609,6 +738,7 @@ export class Room extends DurableObject {
       }
     } else if (room.phase === "playing") {
       this.sql.exec("UPDATE room SET phase = 'ended', ended_message = ? WHERE id = 1", `${name} left the game. The match has ended.`);
+      for (const s of this.activeSeats()) this.notify(s.seat, { kind: "ended", title: `Your ${GAME_NAMES[room.game]} game ended`, body: "A player left the game." });
     }
     await this.touch();
     await this.syncDirectory();
@@ -639,7 +769,7 @@ export class Room extends DurableObject {
     const room = this.room();
     if (!room || !this.env.DIRECTORY || room.open !== 1) return;
     const seats = this.activeSeats();
-    const hostHere = this.ctx.getWebSockets(room.organizer).some((s) => s !== closing && this.isLive(s));
+    const hostHere = this.ctx.getWebSockets(room.organizer).some((s) => s !== closing && this.isPresent(s));
     const listed = room.phase === "lobby" && hostHere && seats.length > 0 && seats.length < room.max_seats;
     const host = seats.find((s) => s.seat === room.organizer)?.nickname ?? "Player";
     await directory(this.env).fetch(listed ? "https://dir/upsert" : "https://dir/remove", {

@@ -110,6 +110,16 @@ final class GameCoordinator {
     private(set) var removedFromCodes: Set<String> = []
     /// Players the host removed from this phone-hosted lobby; they can't rejoin it.
     @ObservationIgnored private var removedIds: Set<String> = []
+    /// This phone's push address, given to the online game so it can notify us while the app
+    /// isn't open (someone joined, the game started, our turn). Nil without notification permission.
+    @ObservationIgnored var pushToken: (token: String, sandbox: Bool)? {
+        didSet {
+            guard pushToken?.token != oldValue?.token else { return }
+            cloudConnection?.send(.push(token: pushToken?.token ?? "", sandbox: pushToken?.sandbox ?? false))
+        }
+    }
+    /// The app is on screen. Off screen, the online game counts us as away and notifies us instead.
+    @ObservationIgnored private var appIsActive = true
 
     // Host-only authoritative state.
     @ObservationIgnored private var authoritative: GameEngine.State?
@@ -1091,12 +1101,24 @@ final class GameCoordinator {
         return false
     }
 
+    /// The app came on screen or left it. Off screen, the online game's server notifies us
+    /// (instead of assuming we're watching) until we're back.
+    func appVisibilityChanged(active: Bool) {
+        guard active != appIsActive else { return }
+        appIsActive = active
+        cloudConnection?.send(active ? .here : .away)
+    }
+
     /// Internal for tests.
     func handleCloud(_ event: CloudRoomEvent) {
         guard lobby?.isOnline == true else { return }
         switch event {
         case .connected:
             isCloudConnected = true
+            // A fresh connection starts "here" with no push address; bring the server up to date.
+            if let pushToken { cloudConnection?.send(.push(token: pushToken.token, sandbox: pushToken.sandbox)) }
+            DebugTrace.log("push: connected; token \(pushToken == nil ? "none" : "sent"), app \(appIsActive ? "on screen" : "away")")
+            if !appIsActive { cloudConnection?.send(.away) }
             // A move whose answer was lost with the old connection: the same id is safe to resend.
             if let pendingCloudMove { cloudConnection?.send(.move(pendingCloudMove)) }
         case .disconnected:

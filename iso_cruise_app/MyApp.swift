@@ -2,6 +2,8 @@ import SwiftUI
 import UIKit
 
 @main struct MyApp: App {
+    /// Only for the push device token, which SwiftUI apps can't get otherwise.
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
     @State private var profile: ProfileStore
     @State private var session: SessionManager
@@ -83,6 +85,11 @@ import UIKit
             cloudStore: CloudRoomStore(),
             onlineAvailable: { await online.currentlyOnline() }
         )
+        // Online games notify a player who isn't looking, through this phone's push address.
+        let push = PushRegistration.shared
+        push.onChange = { [weak games] token in
+            games?.pushToken = token.map { ($0, push.sandbox) }
+        }
         connectionSettings.apply = { [weak session] enabled in
             composite.setEnabled(enabled, for: .multipeer)
             session?.restartTransport()
@@ -141,6 +148,7 @@ import UIKit
                     nudges.start()
                     probe.start()
                     await notifications.requestAuthorization()
+                    await PushRegistration.shared.refresh()
                     await reporter.uploadIfDue()
                     #if DEBUG
                     // Scripted diagnostics: `-CruiseLANRunNetworkTest` runs the network test at launch.
@@ -153,6 +161,13 @@ import UIKit
         }
         .onChange(of: scenePhase) { old, phase in
             notifications.isAppActive = phase == .active
+            // Off screen, an online game's server notifies us rather than assuming we're watching.
+            if phase == .background { games.appVisibilityChanged(active: false) }
+            if phase == .active {
+                games.appVisibilityChanged(active: true)
+                // Notifications may have been turned on or off in Settings meanwhile.
+                if profile.nickname != nil { Task { await PushRegistration.shared.refresh() } }
+            }
             switch phase {
             case .inactive where old == .background:
                 // Back on screen but not yet active, for example behind a system alert.

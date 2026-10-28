@@ -361,6 +361,34 @@ struct OnlineGamesTests {
         #expect(((move["spades"] as? [String: Any])?["_0"] as? [String: Any])?["bid"] != nil, "same shape the Swift rules on the server decode")
     }
 
+    @Test("Push: the phone's push address and away state reach the online game, and encode as the server expects")
+    func pushAndAway() async throws {
+        let s = Setup()
+        s.games.pushToken = ("ab12", true)
+        s.games.hostLobby(.ticTacToe)
+        await settle { s.games.lobby != nil }
+        let connection = try #require(s.cloud.connections.first)
+        connection.connect()
+        #expect(connection.sent.contains(.push(token: "ab12", sandbox: true)), "sent as soon as the connection is up")
+        s.games.appVisibilityChanged(active: false)
+        #expect(connection.sent.last == .away)
+        // Reconnecting while still in the background says so again: a new socket starts "here".
+        connection.drop()
+        connection.connect()
+        #expect(connection.sent.suffix(2) == [.push(token: "ab12", sandbox: true), .away])
+        s.games.appVisibilityChanged(active: true)
+        #expect(connection.sent.last == .here)
+        // Notifications turned off in Settings: the server forgets the address.
+        s.games.pushToken = nil
+        #expect(connection.sent.last == .push(token: "", sandbox: false))
+
+        let object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(CloudClientMessage.push(token: "ab12", sandbox: true))) as? [String: Any])
+        #expect(object["type"] as? String == "push" && object["token"] as? String == "ab12" && object["sandbox"] as? Bool == true)
+        let away = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(CloudClientMessage.away)) as? [String: Any])
+        #expect(away["type"] as? String == "away")
+        s.store.clear()
+    }
+
     @Test("Offers carrying a malformed online code are rejected at decode time")
     func offerValidation() throws {
         func envelope(_ code: String?) -> Envelope {

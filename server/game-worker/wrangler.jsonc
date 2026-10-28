@@ -23,5 +23,8 @@
     // Invite pages and room info say whether a code exists, so they're throttled too.
     { "name": "INFO_LIMITER", "namespace_id": "4103", "simple": { "limit": 240, "period": 60 } }
   ],
+  // Push notifications: the key itself is the secret APNS_KEY (wrangler secret put APNS_KEY < AuthKey_….p8).
+  // Tests run against a fake APNs: test/dev-server.sh writes .dev.vars with APNS_MOCK and a throwaway key.
+  "vars": { "APNS_KEY_ID": "6MGB9S6XGD", "APNS_TEAM_ID": "CB4AAVWWUD" },
   "observability": { "enabled": true }
 }

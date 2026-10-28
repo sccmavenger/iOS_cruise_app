@@ -111,8 +111,14 @@ nonisolated enum CloudClientMessage: Encodable, Equatable, Sendable {
     case leave
     /// The host removes a player from the lobby.
     case kick(seat: String)
+    /// This phone's push address, so the seat is notified while the app isn't open. Empty clears it.
+    case push(token: String, sandbox: Bool)
+    /// The app left the screen: the server treats the seat as not looking (and notifies it)
+    /// until `here` or any other message.
+    case away
+    case here
 
-    private enum Keys: String, CodingKey { case type, moveId, baseRevision, move, seat }
+    private enum Keys: String, CodingKey { case type, moveId, baseRevision, move, seat, token, sandbox }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: Keys.self)
@@ -124,6 +130,12 @@ nonisolated enum CloudClientMessage: Encodable, Equatable, Sendable {
         case .kick(let seat):
             try container.encode("kick", forKey: .type)
             try container.encode(seat, forKey: .seat)
+        case .push(let token, let sandbox):
+            try container.encode("push", forKey: .type)
+            try container.encode(token, forKey: .token)
+            try container.encode(sandbox, forKey: .sandbox)
+        case .away: try container.encode("away", forKey: .type)
+        case .here: try container.encode("here", forKey: .type)
         case .move(let request):
             try container.encode("move", forKey: .type)
             try container.encode(request.moveId.uuidString, forKey: .moveId)
