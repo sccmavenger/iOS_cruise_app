@@ -27,6 +27,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     parser.add_argument("--dry-run", action="store_true")
+    # Keep only the newest build, even if external testers are still on an older one (they
+    # lose access until the newest passes Beta App Review).
+    parser.add_argument("--only-newest", action="store_true")
     args = parser.parse_args()
     client = Client(json.loads(pathlib.Path(args.config).read_text()))
 
@@ -46,12 +49,12 @@ def main():
     if not builds:
         raise SystemExit("No builds found")
 
-    keep = {builds[-1][0]: "newest"}
-    for number, _, state, build in builds:
+    keep = {builds[-1][0]: f"newest (external: {builds[-1][2]})"}
+    for number, _, state, build in ([] if args.only_newest else builds):
         if state in IN_REVIEW and not build["attributes"]["expired"]:
             keep.setdefault(number, f"external: {state}")
     approved = [entry for entry in builds if entry[2] in APPROVED and not entry[3]["attributes"]["expired"]]
-    if approved:
+    if approved and not args.only_newest:
         keep.setdefault(approved[-1][0], "serving external testers until a newer build is approved")
 
     for number, version, state, build in builds:

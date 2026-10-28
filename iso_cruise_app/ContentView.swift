@@ -54,6 +54,7 @@ struct MainTabView: View {
     @Environment(AppState.self) private var app
     @Environment(NotificationManager.self) private var notifications
     @Environment(SessionManager.self) private var session
+    @Environment(\.scenePhase) private var scenePhase
     /// Driven from the lobby state with a short delay so any open sheet can finish
     /// dismissing first; UIKit drops a presentation that starts while another is closing.
     @State private var showMatch = false
@@ -121,6 +122,12 @@ struct MainTabView: View {
         .onChange(of: app.isMatchVisible, initial: true) { _, visible in
             notifications.isMatchOnScreen = visible
         }
+        // Back in the foreground mid-game: the match screen can't be shown while the app is in
+        // the background (UIKit drops it), so it may have given up; show it now.
+        .onChange(of: scenePhase) { _, phase in
+            DebugTrace.log("ui: scene \(phase), lobby \(games.lobby != nil), match visible \(app.isMatchVisible), minimized \(app.isMatchMinimized)")
+            if phase == .active, games.lobby != nil, !app.isMatchMinimized, !app.isMatchVisible { presentMatchSoon() }
+        }
         // An invite link: straight into that game. `initial`: it may have opened the app.
         .onChange(of: app.pendingInviteCode, initial: true) { _, code in
             guard let code else { return }
@@ -174,7 +181,12 @@ struct MainTabView: View {
             app.selectedTab = .games
             if games.lobby != nil { app.isMatchMinimized = true }
         case .game:
-            if games.lobby != nil { app.isMatchMinimized = false }
+            // Straight to the game, even if its screen was closed while the app was away. If the
+            // game is still being restored after a relaunch, it opens by itself once it's back.
+            DebugTrace.log("ui: open game from notification, lobby \(games.lobby != nil), match visible \(app.isMatchVisible)")
+            guard games.lobby != nil else { return }
+            app.isMatchMinimized = false
+            if !app.isMatchVisible { presentMatchSoon() }
         }
     }
 
@@ -205,6 +217,7 @@ struct MainTabView: View {
         Task {
             try? await Task.sleep(for: .milliseconds(450))
             guard games.lobby != nil, !app.isMatchMinimized else { return }
+            DebugTrace.log("ui: presenting match (attempt \(attempt))")
             showMatch = true
             try? await Task.sleep(for: .milliseconds(1_200))
             if games.lobby != nil, !app.isMatchMinimized, !app.isMatchVisible, attempt < 4 {

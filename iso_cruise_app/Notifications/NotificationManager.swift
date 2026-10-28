@@ -132,27 +132,44 @@ final class NotificationManager: NSObject {
 }
 
 extension NotificationManager: UNUserNotificationCenterDelegate {
+    // Completion-handler versions, answered on the main thread: with the `async` versions the
+    // system's completion runs off the main thread, and UIKit aborts the app ("tapping a
+    // notification crashes the app", seen on a real iPhone).
+
     /// Game notifications aren't news while the game is on screen: a push sent while the player
     /// was away, or a "your turn" posted while the app was still coming back to the foreground
     /// (it checks the screen when posted, and the screen wasn't up yet).
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
         let isGame = notification.request.content.userInfo["route"] as? String == "game"
-        let watching = await MainActor.run { self.isMatchOnScreen }
-        return isGame && watching ? [] : [.banner, .list, .sound]
+        DispatchQueue.main.async {
+            let watching = MainActor.assumeIsolated { self.isMatchOnScreen }
+            completionHandler(isGame && watching ? [] : [.banner, .list, .sound])
+        }
     }
 
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
         let info = response.notification.request.content.userInfo
         let route = info["route"] as? String
         let conversation = (info["conversation"] as? String).flatMap(UUID.init(uuidString:))
-        await MainActor.run {
-            switch route {
-            case "chat": self.pendingRoute = .chat(conversation ?? ChatStore.everyoneId)
-            case "chats": self.pendingRoute = .chats
-            case "games": self.pendingRoute = .games
-            case "game": self.pendingRoute = .game
-            default: break
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                switch route {
+                case "chat": self.pendingRoute = .chat(conversation ?? ChatStore.everyoneId)
+                case "chats": self.pendingRoute = .chats
+                case "games": self.pendingRoute = .games
+                case "game": self.pendingRoute = .game
+                default: break
+                }
             }
+            completionHandler()
         }
     }
 }
