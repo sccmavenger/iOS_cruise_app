@@ -301,6 +301,49 @@ final class GameCoordinator {
         broadcastOffer()
     }
 
+    /// Starts a game against `ComputerPlayer` on this phone: no one nearby, no internet.
+    func playComputer(_ gameType: GameType) {
+        guard lobby == nil, joiningLobbyId == nil, !isConnectingOnline else {
+            notice = "Finish or leave your current game first."
+            return
+        }
+        guard ComputerPlayer.supports(gameType) else { return }
+        let me = session.localIdentity
+        lobby = Lobby(
+            id: UUID(),
+            gameType: gameType,
+            hostId: me.id,
+            maxSeats: gameType.maxPlayers,
+            players: [
+                LobbyPlayer(id: me.id, nickname: me.nickname, isReady: true, isHost: true),
+                LobbyPlayer(id: ComputerPlayer.playerId, nickname: ComputerPlayer.nickname, isReady: true, isHost: false),
+            ],
+            isOpen: false
+        )
+        invitedIds = []
+        startGame()
+    }
+
+    /// The local player is playing `ComputerPlayer`.
+    var isComputerGame: Bool {
+        lobby?.player(ComputerPlayer.playerId) != nil
+    }
+
+    /// After a short pause, so the move reads as a turn, plays the computer's move if it's due.
+    private func scheduleComputerMoveIfNeeded() {
+        guard isHost, let lobby, lobby.phase == .playing, isComputerGame, let state = authoritative,
+              GameEngine.projection(of: state, for: ComputerPlayer.playerId).awaitingPlayerIds.contains(ComputerPlayer.playerId)
+        else { return }
+        let lobbyId = lobby.id, expectedRevision = revision
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(700))
+            guard let self, self.lobby?.id == lobbyId, self.revision == expectedRevision,
+                  let state = self.authoritative, let move = ComputerPlayer.move(in: state)
+            else { return }
+            self.hostHandleMove(MoveRequestPayload(moveId: UUID(), baseRevision: expectedRevision, move: move), from: ComputerPlayer.playerId)
+        }
+    }
+
     private func hostOnThisPhone(_ gameType: GameType, open: Bool = true) {
         guard lobby == nil else { return }
         let me = session.localIdentity
@@ -443,6 +486,8 @@ final class GameCoordinator {
     func requestRematch() {
         guard let lobby, lobby.phase == .playing, snapshot?.isFinished == true else { return }
         rematchVotes.insert(localId)
+        // The computer always agrees to another round.
+        if isComputerGame { rematchVotes.insert(ComputerPlayer.playerId) }
         if lobby.isOnline {
             cloudConnection?.send(.rematch)
             return
@@ -927,10 +972,11 @@ final class GameCoordinator {
         revision = newRevision
         snapshot = GameEngine.projection(of: state, for: localId)
         if !state.isFinished { rematchVotes = [] }
-        for playerId in lobby.seats where playerId != localId && !awayIds.contains(playerId) {
+        for playerId in lobby.seats where playerId != localId && playerId != ComputerPlayer.playerId && !awayIds.contains(playerId) {
             sendSnapshot(of: state, to: playerId)
         }
         snapshotDidChange(from: previous)
+        scheduleComputerMoveIfNeeded()
     }
 
     private func sendSnapshot(of state: GameEngine.State, to playerId: String) {
@@ -973,7 +1019,8 @@ final class GameCoordinator {
     // MARK: - Host broadcasting
 
     private var otherMembers: [String] {
-        lobby?.players.map(\.id).filter { $0 != localId } ?? []
+        // The computer lives on this phone, so nothing is ever sent to it.
+        lobby?.players.map(\.id).filter { $0 != localId && $0 != ComputerPlayer.playerId } ?? []
     }
 
     private func offerPayload(for lobby: Lobby, invitedPlayerId: String?) -> LobbyOfferPayload {

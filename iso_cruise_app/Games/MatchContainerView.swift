@@ -10,7 +10,7 @@ struct MatchContainerView: View {
 
     /// The other people at the table, for reporting during a match.
     private var otherPlayers: [LobbyPlayer] {
-        games.lobby?.players.filter { $0.id != games.localId } ?? []
+        games.lobby?.players.filter { $0.id != games.localId && $0.id != ComputerPlayer.playerId } ?? []
     }
 
     var body: some View {

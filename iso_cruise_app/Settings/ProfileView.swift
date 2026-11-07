@@ -83,24 +83,30 @@ struct ProfileView: View {
                 } header: {
                     Text("When your phone is locked")
                 } footer: {
-                    Text("Friends nearby reach your phone over Bluetooth while CruiseLAN is in the background, so you get their messages and turns. This needs Bluetooth and Notifications on for CruiseLAN. Don't swipe CruiseLAN away in the app switcher: iOS can't wake an app that was closed that way, so nothing arrives until you open it again.")
+                    Text(AppFeatures.chatEnabled
+                         ? "Friends nearby reach your phone over Bluetooth while CruiseLAN is in the background, so you get their messages and turns. This needs Bluetooth and Notifications on for CruiseLAN. Don't swipe CruiseLAN away in the app switcher: iOS can't wake an app that was closed that way, so nothing arrives until you open it again."
+                         : "Players nearby reach your phone over Bluetooth when it's your turn while CruiseLAN is in the background; online games notify you through Apple's push service. This needs Bluetooth and Notifications on for CruiseLAN.")
                 }
 
                 Section("Safety") {
                     TipRow(symbol: "hand.raised.fill", text: "A safety filter blocks bad words, sexual content, and personal info like phone numbers, emails, links, social media, and cabin numbers.")
-                    TipRow(symbol: "exclamationmark.bubble.fill", text: "Touch and hold a message to report or block someone. Tell a parent or crew member if anything feels wrong.")
+                    TipRow(symbol: "exclamationmark.bubble.fill", text: AppFeatures.chatEnabled
+                           ? "Touch and hold a message to report or block someone. Tell a parent or crew member if anything feels wrong."
+                           : "In a game, tap the Report button to report a player; hosts can also remove players from their lobby. Tell a parent or crew member if anything feels wrong.")
                     NavigationLink("Blocked People (\(session.safety.blocked.count))") {
                         BlockedPeopleView()
                     }
                 }
 
                 Section("Privacy") {
-                    TipRow(symbol: "lock.fill", text: "Messages are end-to-end encrypted: phones that pass them along can't read them.")
-                    // Diagnostics sharing is off unless the user turns it on, so this stays
-                    // accurate either way rather than claiming "no analytics" outright.
-                    TipRow(symbol: "icloud.slash", text: "No accounts, servers, or internet. Anonymous diagnostics are only sent if you turn them on.")
-                    TipRow(symbol: "trash", text: "Chats and games live only in memory and disappear when you quit.")
-                }
+                    if AppFeatures.chatEnabled {
+                        TipRow(symbol: "lock.fill", text: "Messages are end-to-end encrypted: phones that pass them along can't read them.")
+                    }
+                    TipRow(symbol: "person.crop.circle.badge.xmark", text: "No accounts, no ads, no tracking. You only choose a nickname.")
+                    TipRow(symbol: "globe", text: "Online games are hosted by CruiseLAN's game service. It keeps only each game's moves and the nicknames at the table, and deletes them automatically.")
+                    TipRow(symbol: "trash", text: AppFeatures.chatEnabled
+                           ? "Chats and nearby games live only in memory and disappear when you quit."
+                           : "Games hosted on a phone live only in memory and disappear when you quit.")                }
 
                 Section {
                     Button("How to connect") { showConnectGuide = true }
@@ -114,8 +120,10 @@ struct ProfileView: View {
                 }
 
                 Section("Good to know") {
-                    TipRow(symbol: "antenna.radiowaves.left.and.right", text: "Phones running CruiseLAN pass messages along for each other, so the more people nearby have it open, the further it reaches. Some Wi-Fi networks block it.")
-                    TipRow(symbol: "moon.zzz", text: "When you switch apps, games pause for up to 10 minutes. Friends nearby can nudge your phone over Bluetooth when it's your turn or they send a message.")
+                    TipRow(symbol: "antenna.radiowaves.left.and.right", text: "Without internet, phones running CruiseLAN pass game traffic along for each other, so the more people nearby have it open, the further it reaches. Some Wi-Fi networks block it.")
+                    TipRow(symbol: "moon.zzz", text: AppFeatures.chatEnabled
+                           ? "When you switch apps, games pause for up to 10 minutes. Friends nearby can nudge your phone over Bluetooth when it's your turn or they send a message."
+                           : "When you switch apps, games hosted nearby pause for up to 10 minutes. Players nearby can nudge your phone over Bluetooth when it's your turn.")
                 }
 
                 if SafetyConfig.reportEmail != nil || SafetyConfig.supportURL != nil || SafetyConfig.privacyPolicyURL != nil {

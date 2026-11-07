@@ -161,6 +161,21 @@ struct GameDetailSheet: View {
                          : "Joins an open game nearby, or starts one that anyone nearby can join.")
                 }
 
+                if ComputerPlayer.supports(game) {
+                    Section {
+                        Button {
+                            games.playComputer(game)
+                            dismiss()
+                        } label: {
+                            Label("Play the Computer", systemImage: "cpu")
+                                .foregroundStyle(isBusy ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.tint))
+                        }
+                        .disabled(isBusy)
+                    } footer: {
+                        Text("Practice on your own. Works anywhere, with no one nearby and no internet.")
+                    }
+                }
+
                 Section {
                     Picker("Who can join", selection: $hostOpen) {
                         Text("Anyone").tag(true)

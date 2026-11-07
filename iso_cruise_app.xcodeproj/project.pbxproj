@@ -331,10 +331,10 @@
 				INFOPLIST_FILE = "iso-cruise-app-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = CruiseLAN;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "CruiseLAN uses Bluetooth so nearby friends can nudge your phone when it's your turn or they send a message, even while you're in another app.";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.board-games";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "CruiseLAN uses Bluetooth to connect with players nearby and so they can let you know when it's your turn, even while you're in another app.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "CruiseLAN uses the camera only to scan a friend's connect code, so you can reach each other on networks that stop phones from finding each other. No photos or video are taken or stored.";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "CruiseLAN uses your local network to find nearby people running CruiseLAN so you can chat and play games without the internet.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "CruiseLAN uses your local network to find nearby players so you can play games together without the internet, and, if you run the network test in Troubleshooting, to check whether this Wi-Fi lets devices see each other.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
@@ -383,10 +383,10 @@
 				INFOPLIST_FILE = "iso-cruise-app-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = CruiseLAN;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "CruiseLAN uses Bluetooth so nearby friends can nudge your phone when it's your turn or they send a message, even while you're in another app.";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.board-games";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "CruiseLAN uses Bluetooth to connect with players nearby and so they can let you know when it's your turn, even while you're in another app.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "CruiseLAN uses the camera only to scan a friend's connect code, so you can reach each other on networks that stop phones from finding each other. No photos or video are taken or stored.";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "CruiseLAN uses your local network to find nearby people running CruiseLAN so you can chat and play games without the internet.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "CruiseLAN uses your local network to find nearby players so you can play games together without the internet, and, if you run the network test in Troubleshooting, to check whether this Wi-Fi lets devices see each other.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;

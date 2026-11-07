@@ -48,18 +48,24 @@ struct InsightsView: View {
             }
 
             Section {
-                Toggle("Share anonymous diagnostics", isOn: $telemetry.isSharingEnabled)
+                if TelemetryReporter.isAvailable {
+                    Toggle("Share anonymous diagnostics", isOn: $telemetry.isSharingEnabled)
+                }
                 Button("Delete collected data", role: .destructive) {
                     showEraseConfirmation = true
                 }
             } header: {
-                Text("Sharing")
+                Text(TelemetryReporter.isAvailable ? "Sharing" : "Your data")
             } footer: {
-                Text("""
-                These numbers stay on your phone unless you turn sharing on. They never include \
-                messages, nicknames, who you talked to, or where you were — only counts and \
-                timings, grouped under a label that changes every two weeks.
-                """)
+                if TelemetryReporter.isAvailable {
+                    Text("""
+                    These numbers stay on your phone unless you turn sharing on. They never include \
+                    messages, nicknames, who you talked to, or where you were — only counts and \
+                    timings, grouped under a label that changes every two weeks.
+                    """)
+                } else {
+                    Text("These numbers never leave your phone. They're only counts and timings.")
+                }
             }
         }
         .navigationTitle("Insights")

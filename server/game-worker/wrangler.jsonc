@@ -4,6 +4,9 @@
   "main": "src/index.js",
   "compatibility_date": "2026-10-01",
   "workers_dev": true,
+  // The support page and privacy policy linked from the App Store and the app: /support, /privacy.
+  // Files in public/ are served before the Worker runs; everything else reaches src/index.js.
+  "assets": { "directory": "./public", "html_handling": "drop-trailing-slash" },
   "durable_objects": {
     "bindings": [
       { "name": "ROOMS", "class_name": "Room" },

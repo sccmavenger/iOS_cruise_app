@@ -10,7 +10,7 @@ import Foundation
 @MainActor
 final class DemoMode {
     enum Scene: String {
-        case chat, chatList, games, chess, checkers, colorMatch, connectFour, chatWhilePlaying
+        case chat, chatList, games, chess, checkers, colorMatch, connectFour, chatWhilePlaying, spades, tonk, computer
     }
 
     static var requestedScene: Scene? {
@@ -78,7 +78,7 @@ final class DemoMode {
                 app.selectedTab = .games
             }
         case .chess, .chatWhilePlaying:
-            try? start(.chess, host: games, guests: [mia.games])
+            try? await start(.chess, host: games, guests: [mia.games])
             // An Italian Game opening; Sam plays White.
             let moves = [(12, 28), (52, 36), (6, 21), (57, 42), (5, 26), (61, 34)]
             for (index, move) in moves.enumerated() {
@@ -93,7 +93,7 @@ final class DemoMode {
                 app.isMatchMinimized = true
             }
         case .checkers:
-            try? start(.checkers, host: games, guests: [mia.games])
+            try? await start(.checkers, host: games, guests: [mia.games])
             for (from, to) in [(18, 27), (45, 36), (27, 45)] {
                 let player = games.snapshot.flatMap { snapshot -> GameCoordinator? in
                     guard case .checkers(let state) = snapshot else { return nil }
@@ -102,12 +102,24 @@ final class DemoMode {
                 player?.play(.checkers(.move(from: from, to: to)))
             }
         case .colorMatch:
-            try? start(.colorMatch, host: games, guests: [mia.games, leo.games])
+            try? await start(.colorMatch, host: games, guests: [mia.games, leo.games])
         case .connectFour:
-            try? start(.connectFour, host: games, guests: [mia.games])
+            try? await start(.connectFour, host: games, guests: [mia.games])
             for (index, column) in [3, 3, 4, 2, 5].enumerated() {
                 (index.isMultiple(of: 2) ? games : mia.games).play(.connectFour(column: column))
             }
+        case .spades:
+            try? await start(.spades, host: games, guests: [mia.games, leo.games, ava.games])
+        case .tonk:
+            try? await start(.tonk, host: games, guests: [mia.games, leo.games])
+        case .computer:
+            // Checkers against the computer: Sam moves, the computer answers on its own.
+            games.playComputer(.checkers)
+            for (from, to) in [(20, 29), (16, 25)] {
+                for _ in 0..<10 where !games.isAwaitingMe { await pause() }
+                games.play(.checkers(.move(from: from, to: to)))
+            }
+            for _ in 0..<10 where !games.isAwaitingMe { await pause() }
         }
     }
 
@@ -127,6 +139,8 @@ final class DemoMode {
         transport.network = self
         transport.owner = session
         let friend = Friend(session: session, games: GameCoordinator(session: session))
+        session.start()
+        session.handle(.started)
         friends.append(friend)
         return friend
     }
@@ -156,14 +170,18 @@ final class DemoMode {
         receiver.handle(.received(data, from: senderKey))
     }
 
-    private func start(_ game: GameType, host: GameCoordinator, guests: [GameCoordinator]) throws {
+    private func start(_ game: GameType, host: GameCoordinator, guests: [GameCoordinator]) async throws {
         host.hostLobby(game)
+        await pause()
         for guest in guests {
             guard let offer = guest.offers(for: game).first else { continue }
             guest.join(offer)
+            await pause()
             guest.setReady(true)
+            await pause()
         }
         host.startGame()
+        await pause()
     }
 
     private func pause() async {

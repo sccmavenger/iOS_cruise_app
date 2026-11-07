@@ -11,8 +11,8 @@ What it does (idempotent: safe to run again):
   6. Uploads the 6.9" iPhone screenshots (replacing any already there).
   7. With --submit: creates a review submission and submits it for review.
 
-Not available in Apple's public API: the App Privacy questionnaire. Set
-"Data Not Collected" once in App Store Connect › App Privacy (one click).
+Not available in Apple's public API: the App Privacy questionnaire. Set it in
+App Store Connect › App Privacy as described in docs/app-store/SUBMISSION.md §5.
 
 Usage:
   python3 Tools/asc/asc_fill.py --config Tools/asc/config.json [--submit]
@@ -42,27 +42,33 @@ API = "https://api.appstoreconnect.apple.com"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BUNDLE_ID = "com.dannyguillory.cruiselan"
 VERSION = "2.0"
-BUILD = "26"
+BUILD = "27"
 LOCALE = "en-US"
 SCREENSHOT_DIR = ROOT / "docs/app-store/screenshots"
 SCREENSHOT_DISPLAY_TYPE = "APP_IPHONE_67"  # The 6.7"/6.9" iPhone slot; accepts 1320 × 2868.
 
 APP_INFO = {
     "name": "CruiseLAN",
-    "subtitle": "Offline chat & games nearby",
-    "primary_category": "SOCIAL_NETWORKING",
-    "secondary_category": "GAMES",
-    "secondary_subcategory": "GAMES_BOARD",
+    "subtitle": "Board & card games, anywhere",
+    "primary_category": "GAMES",
+    "primary_subcategories": ["GAMES_BOARD", "GAMES_CARD"],
 }
 
-PROMO = ("No Wi-Fi plan? No problem. Chat and play Chess, Checkers, Color Match, Connect Four, "
-         "and Tic-Tac-Toe with people nearby, with no internet, accounts, or ads.")
-KEYWORDS = "offline,chat,cruise,nearby,no wifi,games,chess,checkers,family,local,bluetooth,multiplayer,travel"
+def section(text: str, heading: str) -> str:
+    """Pulls a fenced block that follows `heading` in SUBMISSION.md, so copy lives in one place."""
+    doc = (ROOT / "docs/app-store/SUBMISSION.md").read_text()
+    start = doc.index(heading)
+    block_start = doc.index("```\n", start) + 4
+    return doc[block_start:doc.index("\n```", block_start)].strip()
+
+
+PROMO = section("", "**Promotional text (170):**")
+KEYWORDS = section("", "**Keywords (100):**")
 COPYRIGHT = "2026 Danny Guillory"
 
 # Age rating answers (see docs/app-store/SUBMISSION.md §4). Booleans not listed are False;
 # every content-frequency question is NONE.
-AGE_TRUE = {"userGeneratedContent", "messagingAndChat"}
+AGE_TRUE = {"userGeneratedContent"}
 AGE_FREQUENCY_FIELDS = {
     "alcoholTobaccoOrDrugUseOrReferences", "contests", "gamblingSimulated", "gunsOrOtherWeapons",
     "horrorOrFearThemes", "matureOrSuggestiveThemes", "medicalOrTreatmentInformation",
@@ -75,14 +81,6 @@ AGE_BOOLEAN_FIELDS = {
 }
 AGE_SKIP = {"kidsAgeBand", "ageRatingOverride", "ageRatingOverrideV2", "koreaAgeRatingOverride",
             "developerAgeRatingInfoUrl"}
-
-
-def section(text: str, heading: str) -> str:
-    """Pulls a fenced block that follows `heading` in SUBMISSION.md, so copy lives in one place."""
-    doc = (ROOT / "docs/app-store/SUBMISSION.md").read_text()
-    start = doc.index(heading)
-    block_start = doc.index("```\n", start) + 4
-    return doc[block_start:doc.index("\n```", block_start)].strip()
 
 
 class Client:
@@ -157,8 +155,11 @@ def main():
     info_id = info["id"]
     api.patch(f"/v1/appInfos/{info_id}", {"data": {"type": "appInfos", "id": info_id, "relationships": {
         "primaryCategory": {"data": {"type": "appCategories", "id": APP_INFO["primary_category"]}},
-        "secondaryCategory": {"data": {"type": "appCategories", "id": APP_INFO["secondary_category"]}},
-        "secondarySubcategoryOne": {"data": {"type": "appCategories", "id": APP_INFO["secondary_subcategory"]}},
+        "primarySubcategoryOne": {"data": {"type": "appCategories", "id": APP_INFO["primary_subcategories"][0]}},
+        "primarySubcategoryTwo": {"data": {"type": "appCategories", "id": APP_INFO["primary_subcategories"][1]}},
+        "secondaryCategory": {"data": None},
+        "secondarySubcategoryOne": {"data": None},
+        "secondarySubcategoryTwo": {"data": None},
     }}})
     print("Categories set")
 
@@ -281,7 +282,7 @@ def main():
     missing = [name for name, value in [("support URL", config.get("support_url")),
                ("privacy policy URL", config.get("privacy_policy_url")),
                ("review contact phone/email", contact.get("phone") and contact.get("email"))] if not value]
-    print("\nStill needed before submitting: App Privacy › 'Data Not Collected' (web only)"
+    print("\nStill needed before submitting: App Privacy › Gameplay Content, not linked, not tracking (web only)"
           + ("; " + ", ".join(missing) if missing else ""))
 
     # 7. Submit

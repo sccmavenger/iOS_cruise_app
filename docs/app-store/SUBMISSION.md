@@ -1,183 +1,172 @@
-# CruiseLAN: App Store submission package
+# CruiseLAN 2.0: App Store submission package
 
 Everything needed to fill in App Store Connect (ASC) for the first App Store release.
-Values are copy-ready. Character limits are noted, and every value is within them.
+`Tools/asc/asc_fill.py` reads the description and review notes straight from this file, so
+copy lives in one place. Character limits are noted, and every value is within them.
 
-## 0. Required inputs (only you can provide these)
+Reviewed against the App Review Guidelines on 2026-11-06. The table in §8 maps each guideline
+risk to what answers it.
 
-| Item | Where it's used | Status |
+## 0. Inputs
+
+| Item | Value | Where it's used |
 |---|---|---|
-| Support and safety email | `SafetyConfig.reportEmail` in `iso_cruise_app/Safety/SafetyStore.swift`, both HTML pages, the ASC contact | **Needed.** Use an address you're happy to publish (for example, a dedicated `cruiselan.support@…` alias). |
-| Support URL | ASC › App Information, `SafetyConfig.supportURL` | **Needed.** Host `docs/site/support.html` |
-| Privacy Policy URL | ASC › App Information, `SafetyConfig.privacyPolicyURL` | **Needed.** Host `docs/site/privacy.html` |
-| App name on the store | ASC › App Information › Name | Rename the record to **CruiseLAN** if it still says `iso_cruise_app` |
+| Support and safety email | `SUPPORT_EMAIL` until the owner picks one | `SafetyConfig.reportEmail`, both pages, in-app Report and Contact |
+| Support URL | https://cruiselan-games.dguilloryjr.workers.dev/support | ASC, `SafetyConfig.supportURL` |
+| Privacy Policy URL | https://cruiselan-games.dguilloryjr.workers.dev/privacy | ASC, `SafetyConfig.privacyPolicyURL`, Profile › Help |
 
-**Hosting the two pages:** the quickest free option is a public GitHub repo with Pages turned on. You can also paste them into any site you own. Replace `SUPPORT_EMAIL` in both files first.
+The pages are `server/game-worker/public/*.html`, served as static assets by the
+`cruiselan-games` Worker (`npx wrangler deploy` from `server/game-worker`).
 
-**After filling in the code values:**
-1. Bump the build.
-2. Archive and upload (the steps are in the README).
-3. Pick that build in ASC.
-
-> Why it's required: App Review Guideline 1.2 (user-generated content) requires a content filter (done), report (done), block (done), and **published contact information**. A report opens Mail addressed to that contact.
-
----
-
-## 1. App Information (ASC › App Information)
+## 1. App Information
 
 | Field | Value |
 |---|---|
 | Name (30) | `CruiseLAN` |
-| Subtitle (30) | `Offline chat & games nearby` |
-| Primary category | Social Networking |
-| Secondary category | Games › Board |
+| Subtitle (30) | `Board & card games, anywhere` |
+| Primary category | Games › Board, Card |
+| Secondary category | none |
 | Content rights | Doesn't contain, show, or access third-party content |
-| Age rating | See section 4 |
 
 ## 2. Pricing and availability
-- Free. All territories.
-- Note: under Texas SB 2420, Apple asks for parental consent for minors' downloads. CruiseLAN has no accounts or purchases, so there's nothing extra to build for 1.0 (see section 9).
+Free. All territories. No in-app purchases.
 
-## 3. Version information (ASC › iOS App › 1.6)
+## 3. Version information (2.0)
 
 **Promotional text (170):**
 ```
-No Wi-Fi plan? No problem. Chat and play Chess, Checkers, Color Match, Connect Four, and Tic-Tac-Toe with people nearby, with no internet, accounts, or ads.
+Chess, Checkers, Connect Four, Tic-Tac-Toe, Color Match, Spades, and Tonk. Play online, with people nearby when there's no internet, or against the computer.
 ```
 
 **Description (4000):**
 ```
-CruiseLAN lets you chat and play games with people near you, with no internet connection, no accounts, and no data plan. It's made for cruises, road trips, campsites, and anywhere the Wi-Fi is expensive or missing.
+CruiseLAN is a pack of classic board and card games for family and friends, made for travel. Play online when you have internet, with people nearby when you don't, or against the computer on your own. No accounts, no ads.
 
-CHAT WITH PEOPLE NEARBY
-Pick a nickname, see who's around, and start chatting. Talk to everyone at once, have a private one-on-one, or start a group with just the people you pick. Phones connect directly to each other over Wi-Fi and Bluetooth, with nothing in between.
-
-FIVE GAMES TO PLAY TOGETHER
+SEVEN GAMES
 • Chess: full rules, including castling, en passant, and promotion
 • Checkers: classic American rules with forced jumps and kings
-• Color Match: a fast card game for 2 to 4 players
 • Connect Four: drop discs and line up four
 • Tic-Tac-Toe: quick rounds and rematches
+• Color Match: a fast card game for 2 to 4 players
+• Spades: the partnership trick-taking classic for 4 players
+• Tonk: a quick rummy-style card game for 2 to 4 players
 
-KEEP PLAYING WHILE YOU CHAT
-Tuck a game away and chat while you wait. A bar above the tabs tells you when it's your turn. Phone locked or watching a movie? Friends nearby can still reach you: you'll get a notification for new messages, game invites, and your turn.
+PLAY ONLINE
+With internet, including hotel and ship Wi-Fi, games are hosted online. Use Quick Play to join a game that's waiting for players, or host a private game and share its code or invite link. You'll get a notification when it's your turn.
+
+PLAY NEARBY, NO INTERNET NEEDED
+No Wi-Fi plan? Phones close to each other connect directly over Wi-Fi and Bluetooth, and one phone hosts the game. Open games nearby show up in the list for everyone around you.
+
+PLAY THE COMPUTER
+Practice Tic-Tac-Toe, Connect Four, Checkers, and Chess against the computer, anywhere, with no one else needed.
 
 BUILT FOR FAMILIES
-• An on-device safety filter blocks bad words, sexual content, and personal information like phone numbers, emails, links, social handles, and cabin numbers, before it's sent and again when it's received.
-• Report or block anyone with a long press. Blocked people can't message or invite you.
-• Every new connection must be accepted.
+• Just a nickname: no accounts, no ads, no tracking
+• A safety filter blocks bad words and personal details in nicknames
+• Report any player from the game screen; hosts can remove players from their lobby
+• Games can be private: only people with the code can join
 
-PRIVATE BY DESIGN
-No accounts, no servers, no ads, no analytics, no tracking. Connections are encrypted, and chats live only in memory and disappear when you quit.
-
-Good to know: CruiseLAN reaches people near you, typically in the same area of a ship or building. It isn't a ship-wide network, and some Wi-Fi networks block devices from seeing each other.
+Good to know: nearby play reaches phones close to you, not a whole ship, and some Wi-Fi networks stop phones from seeing each other. When that happens, play online instead.
 ```
 
 **Keywords (100):**
 ```
-offline,chat,cruise,nearby,no wifi,games,chess,checkers,family,local,bluetooth,multiplayer,travel
+chess,checkers,connect four,tic tac toe,spades,tonk,board games,card games,cruise,offline,family
 ```
 
-**What's New:** leave empty for the first release.
+**Copyright:** `2026 Danny Guillory`
 
-**Support URL:** your hosted `support.html`. **Marketing URL:** optional.
+**Screenshots (6.9" iPhone, 1320 × 2868),** in `docs/app-store/screenshots/`, uploaded in name order:
+1. `01-games.png`: the seven games
+2. `02-chess.png`: chess against a nearby player
+3. `03-computer.png`: checkers against the computer
+4. `04-colorMatch.png`
+5. `05-spades.png`
+6. `06-connectFour.png`
+7. `07-tonk.png`
 
-**Copyright:** `2026 Danny Guillory` (adjust if publishing as a company).
+The app is iPhone-only, so no iPad set is needed. To regenerate: Debug build on the iPhone 18 Pro
+Max simulator, launch with `-CruiseLANDemo <scene>` (`games`, `chess`, `computer`, `colorMatch`,
+`spades`, `connectFour`, `tonk`, `checkers`), then `xcrun simctl io <udid> screenshot`.
 
-**Screenshots (6.9" iPhone, 1320 × 2868):** upload in this order from `docs/app-store/screenshots/`:
-1. `01-chat.png`: chat with people nearby
-2. `02-games.png`: all five games, with open games nearby
-3. `03-chatWhilePlaying.png`: chat while it's your turn
-4. `04-chess.png`
-5. `05-colorMatch.png`
-6. `06-checkers.png`
-7. `07-connectFour.png`
+## 4. Age rating answers
 
-ASC scales these for smaller iPhones. The app is iPhone-only, so no iPad set is needed. To regenerate them:
-1. Run a Debug build on an iPhone Pro Max simulator with the launch argument `-CruiseLANDemo <scene>`.
-2. Use one of these scenes: `chat`, `games`, `chatWhilePlaying`, `chess`, `colorMatch`, `checkers`, `connectFour`.
-
-## 4. Age rating questionnaire
-
-Answer as follows. The calculated rating should be **4+**.
+Let ASC calculate the rating from these answers.
 
 | Question | Answer | Reason |
 |---|---|---|
-| Parental controls | No | |
-| Age assurance | No | |
-| Unrestricted web access | No | The app has no browser or web views. The only external links are Mail and the Acknowledgements license link. |
-| User-generated content | **Yes** | Chat messages and nicknames |
-| Messaging and chat | **Yes** | |
-| Social media | **No** | There's no feed, discovery, resharing, or amplification. Messages go only to people you've accepted who are physically nearby. |
-| Advertising | No | |
-| All content descriptors (violence, profanity, sexual content, horror, gambling, drugs, mature themes, medical, contests) | None | Games are abstract, and profanity and sexual content are filtered |
-| Made for Kids | **No** | Don't choose the Kids category: Kids-category apps face strict limits on chat with strangers. The app is family-friendly, but its audience is all ages. |
+| Parental controls, age assurance | No | |
+| Unrestricted web access | No | No browser or web views; links open Safari or Mail |
+| User-generated content | **Yes** | Nicknames are shown to other players, including strangers in open online games |
+| Messaging and chat | No | Chat is turned off in 2.0 (`AppFeatures.chatEnabled = false`) |
+| Social media | No | |
+| Advertising, gambling, loot boxes, contests | No / None | Spades and Tonk are played for points only; nothing of value is wagered |
+| All content descriptors | None | Abstract board and card games |
+| Made for Kids | No | Open online games include strangers |
 
-## 5. App Privacy (ASC › App Privacy)
+## 5. App Privacy (ASC › App Privacy — web only, the API can't set it)
 
-- **Data collection:** select **"No, we do not collect data from this app."**
-- **Why that's accurate under Apple's definitions:**
-  - "Collect" means data sent off the device where the developer or its partners can access it. CruiseLAN has no server. Nicknames and messages go directly to nearby phones the user chose to connect with, never to the developer.
-  - Safety reports are emails the user decides to write and send from Mail. Apple's "optionally disclosed" criteria cover these: not used for tracking or ads, infrequent, optional, and clearly user-provided.
-- **Privacy manifest:** `PrivacyInfo.xcprivacy` declares no tracking and no collected data. It lists one required-reason API: UserDefaults, reason CA92.1, for the nickname, blocked list, and trusted devices.
+Matches `PrivacyInfo.xcprivacy`:
+
+- **Data collection: Yes.** One type:
+  - **Gameplay Content** — purpose **App Functionality**; **not linked** to the user; **not used for tracking**.
+- Nothing else. Diagnostics stay on the device (this build has no telemetry endpoint, and the
+  sharing switch is hidden). Push tokens are held only with the game they were given to and
+  deleted with it, used only to deliver that game's notifications.
+- Privacy Policy URL: as in §0.
 
 ## 6. App Review information
 
-**Sign-in required:** No.
-
-**Contact:** your name, phone, and the support email.
+**Sign-in required:** No. **Contact:** reused from The Hub's review details by `asc_fill.py`.
 
 **Notes (paste):**
 ```
-CruiseLAN is an offline, peer-to-peer chat and games app for people physically near each other (built for cruise ships, where internet is expensive). It uses MultipeerConnectivity; there is no server and no account. Phones running CruiseLAN relay end-to-end encrypted messages for each other (a mesh), so friends further apart than radio range can still reach each other. Only people you've accepted can message you.
+CruiseLAN is a set of classic board and card games (Chess, Checkers, Connect Four, Tic-Tac-Toe, Color Match, Spades, Tonk). There are no accounts, purchases, or ads; players only choose a nickname.
 
-TESTING REQUIRES TWO iPHONES (or an iPhone and an iPad running the iPhone app) with Wi-Fi and Bluetooth turned on. They don't need to join a network.
+TESTING WITH ONE DEVICE
+1. Open CruiseLAN, enter any nickname, tap Get Started. Allow or decline the Local Network, Bluetooth, and Notifications prompts; the steps below work either way.
+2. Tap Tic-Tac-Toe (or Connect Four, Checkers, Chess) › Play the Computer. The game starts at once and the computer answers each move. No internet or second device is needed. Rematch is offered when the game ends.
 
-1. On both devices: open CruiseLAN, enter any nickname, tap Get Started, and allow Local Network, Bluetooth, and Notifications.
-2. Device A: Chat › People (top right) › tap Device B under "People on CruiseLAN" › Invite. Device B: Chat shows "1 person wants to connect" › People › Requests › Accept.
-3. Chat: type a message on either device. Try "send nudes" or a phone number to see the safety filter block it.
-4. Report/Block: on the other device, touch and hold a received message › Report. Reporting blocks the sender and opens a pre-filled email to our safety contact.
-5. Games: Games › Chess › Host a New Game on Device A. Device B sees "1 open game nearby" › Join › I'm Ready. Device A › Start Game.
-6. Chat while playing: tap the chat bubble (top right of the game). A "Your turn!" bar above the tabs returns to the game.
+TESTING ONLINE WITH TWO DEVICES (internet required, any network)
+3. Device A: Chess › Host a New Game. The lobby shows an invite code and a Share Invite button (an invite link).
+4. Device B: Games › Join a Game with a Code, enter the code. Device A › Start Game. Moves sync between devices; while a player's app is closed, they receive a push notification when it's their turn.
+5. Quick Play joins an open game waiting for players, or starts one that others can join.
 
-Background mode "bluetooth-peripheral": while CruiseLAN is in the background or the phone is locked, iOS ends peer-to-peer Wi-Fi sessions. CruiseLAN advertises a small Bluetooth service so a nearby friend's phone can deliver a short message: "your turn", a chat preview, or a game move for a host whose phone is locked. Each one is end-to-end encrypted with a key only those two phones share (exchanged over the encrypted Multipeer link), and iOS wakes the app to post a local notification or apply the move. To see it: start a game on both devices, lock Device B when it's B's turn after A moves, or send a chat from A while B is in another app. B shows "Your turn in Chess" or the message preview.
+TESTING NEARBY WITHOUT INTERNET (two devices, optional)
+6. Turn off internet on both (Airplane Mode, then turn Wi-Fi and Bluetooth back on). Device A: Connect Four › Host a New Game. Device B sees it under Open games › tap it › I'm Ready. Device A › Start Game.
 
-User-generated content safeguards (Guideline 1.2): on-device filter on send and on receipt; three filtered messages auto-block the sender; report and block on every message and person; every contact must be accepted (requests wait in a list, no pop-ups; declines mute the requester for 10 minutes); phones that relay messages can't read them; nicknames are filtered; contact email is in Profile › Help and on our support page.
+SAFETY (Guideline 1.2): the only user-generated content is the nickname. Nicknames are filtered on the device for profanity, sexual content, and personal information. Every multiplayer game screen has a Report button (reports open a pre-filled email to our support address and block the player on that device for nearby games); hosts can remove a player from their lobby; private games are joinable only by code. Chat is not offered. Support contact and privacy policy are in Profile (person icon, top right of Games) › Help.
 
-Encryption: all encryption uses Apple's operating system: MultipeerConnectivity link encryption and CryptoKit (ChaCha20-Poly1305, Curve25519) for end-to-end message encryption and signatures. No third-party or proprietary cryptography (ITSAppUsesNonExemptEncryption = NO).
+ONLINE SERVICE: online games are hosted by our own service on Cloudflare. It stores only each game's moves, the players' nicknames at that table, and (if notifications are allowed) the APNs token for that game, and deletes games automatically (privacy policy linked in the app and in App Store Connect).
+
+PERMISSIONS: Local Network and Bluetooth find players nearby when there's no internet. Background mode "bluetooth-peripheral": while the app is in the background, a nearby player's phone can deliver "your turn" or a game move over an encrypted Bluetooth service, and iOS wakes CruiseLAN to post a local notification. Location (When In Use) is requested only if the user taps "Show name" (Wi-Fi network) in Profile › Troubleshooting, to read the Wi-Fi network name (NEHotspotNetwork); it is never stored or sent. Camera is used only to scan a friend's connect code.
+
+ENCRYPTION: only Apple's operating-system encryption is used (HTTPS/TLS via URLSession and Network.framework, MultipeerConnectivity, CryptoKit). No proprietary or third-party cryptography (ITSAppUsesNonExemptEncryption = NO).
 ```
 
 ## 7. Export compliance
-Already declared in the binary (`ITSAppUsesNonExemptEncryption = NO`). ASC won't ask.
+`ITSAppUsesNonExemptEncryption = NO` is in the binary. Apple's guidance ("Complying with
+Encryption Export Regulations"): set NO "if it only uses forms of encryption that are exempt from
+export compliance documentation requirements", and "typically, the use of encryption that's built
+into the operating system … is exempt". All of CruiseLAN's encryption is Apple's (URLSession and
+Network.framework TLS, MultipeerConnectivity, CryptoKit); there's no third-party crypto. Apple
+notes that exempt apps may still owe the US BIS an annual self-classification report.
 
-## 8. Pre-submission checklist
+## 8. Guideline risks and what answers them
 
-- [x] iPhone-only (`TARGETED_DEVICE_FAMILY = 1`), minimum iOS 26.1
-- [x] 1024 px app icon, opaque
-- [x] Privacy manifest with required-reason APIs
-- [x] Usage strings: Local Network, Bluetooth
-- [x] Background mode justified in review notes
-- [x] Content filter, report, block (Guideline 1.2)
-- [x] Screenshots at 1320 × 2868
-- [x] No debug code in Release: `DemoMode` is `#if DEBUG` only
-- [x] 216 automated tests pass
-- [ ] Support email set in code and pages, then rebuild
-- [ ] Support and privacy pages hosted; URLs in ASC and in `SafetyConfig`
-- [ ] Tested on two real iPhones from TestFlight: chat, a game, background nudge
-- [ ] ASC: metadata, age rating, privacy answers, screenshots, pick build, **Add for Review**
+| Guideline | Risk | Answer |
+|---|---|---|
+| 2.1 App completeness | Reviewer alone can't play a multiplayer-only app | Play the Computer (4 games), one-device steps first in the notes |
+| 2.1 | Back end must be up | `cruiselan-games` Worker; check `/v1/health` before submitting |
+| 2.3.1 / 2.3.3 Accurate metadata | Old listing described chat, "no servers" | Rewritten for games-first 2.0; screenshots regenerated from 2.0 |
+| 5.1.1(i) Privacy policy | Must be in ASC and in the app | Hosted URL in both; Profile › Help › Privacy Policy |
+| 5.1.1 / 5.1.2 Accurate disclosures | App claimed "no servers", diagnostics toggle sent nothing | Copy fixed; toggle hidden without an endpoint; manifest = Gameplay Content |
+| 5.1.1 Purpose strings | Mentioned chat | Rewritten for games and the network test |
+| 1.2 UGC | Filter, report, block, published contact | Nickname filter, Report on every game, host remove, on-device block, support email |
+| 2.5.4 Background modes | bluetooth-peripheral must be used | Turn nudges and move relay for nearby games; explained in notes |
+| 4.2 Minimum functionality | Empty lobbies look broken | Play the Computer, Quick Play, seven complete games |
+| 2.2 Betas | No beta wording in app | None found (grep) |
 
-## 9. Texas SB 2420 / Declared Age Range: decision for 1.0
-
-Apple says developers "may need to" adopt the Declared Age Range and Significant Change APIs, depending on their obligations under the law.
-
-**Decision:** don't adopt them for 1.0. CruiseLAN has:
-- no accounts
-- no purchases
-- no age-gated content or features
-- no data collection
-
-Apple's store-level age verification and parental consent cover the download itself.
-
-**Revisit if:** the app adds purchases, accounts, age-specific features, or materially changes what it does (a "significant change").
-
+## 9. Texas SB 2420 / Declared Age Range
+Not adopted for 2.0: no accounts, purchases, or age-gated features. Revisit if any are added.
 *This is an engineering judgment, not legal advice.*

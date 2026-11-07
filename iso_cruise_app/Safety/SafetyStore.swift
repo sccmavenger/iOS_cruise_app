@@ -57,16 +57,18 @@ final class SafetyStore {
 }
 
 /// Where safety reports and support requests go. Reports open the Mail app with a
-/// pre-filled message; nothing is sent automatically, and there is no CruiseLAN server.
-/// Mail queues the message until the phone is back online (for example, after the cruise).
+/// pre-filled message; nothing is sent automatically. Mail queues the message until the
+/// phone is back online (for example, after the cruise).
 ///
-/// App Review Guideline 1.2 requires published contact information for apps with chat;
-/// these must match the Support URL and contact email entered in App Store Connect.
+/// App Review Guideline 1.2 requires published contact information for apps with user content,
+/// and 5.1.1(i) a privacy policy link inside the app. These must match the Support URL, Privacy
+/// Policy URL and contact entered in App Store Connect. The pages are served by the online game
+/// service from server/game-worker/public.
 enum SafetyConfig {
     /// Published safety and support contact. Rows that use it are hidden while it's `nil`.
-    static let reportEmail: String? = nil
-    static let supportURL: URL? = nil
-    static let privacyPolicyURL: URL? = nil
+    static let reportEmail: String? = "SUPPORT_EMAIL"
+    static let supportURL = URL(string: "https://cruiselan-games.dguilloryjr.workers.dev/support")
+    static let privacyPolicyURL = URL(string: "https://cruiselan-games.dguilloryjr.workers.dev/privacy")
     /// Filtered messages from one person in a session before they're blocked automatically.
     static let autoBlockThreshold = 3
 }

@@ -12,16 +12,11 @@
 	<array/>
 
 	<!--
-	  Declares the aggregated diagnostics uploaded by `TelemetryReporter` when, and only
-	  when, the user turns on "Share anonymous diagnostics" (off by default). Nothing is
-	  uploaded otherwise; the same numbers are still recorded on the device to drive the
-	  Troubleshooting and Insights screens, which is not collection.
-
-	  Everything uploaded is a count, a timing, or a label drawn from the closed
-	  `TelemetryDimension` vocabulary — never a message, nickname, mesh id, IP address,
-	  Wi-Fi network name, or location. Reports are grouped under a random pseudonym that
-	  rotates every 14 days and is cleared when the app is deleted, so none of this is
-	  linked to a person's identity. See docs/decisions/telemetry.md.
+	  Only what the online game service holds is collected (below). Push notification addresses
+	  are given to that game alone and forgotten with it. Diagnostics stay on the device: this
+	  build has no telemetry endpoint (`CruiseLANTelemetryEndpoint`), so the sharing switch is
+	  hidden. If an endpoint is ever added, declare ProductInteraction, PerformanceData and
+	  OtherDiagnosticData (not linked, analytics) here again; see docs/decisions/telemetry.md.
 	-->
 	<key>NSPrivacyCollectedDataTypes</key>
 	<array>
@@ -42,45 +37,6 @@
 			<key>NSPrivacyCollectedDataTypePurposes</key>
 			<array>
 				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
-			</array>
-		</dict>
-		<!-- Match and chat counts: how often features are used, never their content. -->
-		<dict>
-			<key>NSPrivacyCollectedDataType</key>
-			<string>NSPrivacyCollectedDataTypeProductInteraction</string>
-			<key>NSPrivacyCollectedDataTypeLinked</key>
-			<false/>
-			<key>NSPrivacyCollectedDataTypeTracking</key>
-			<false/>
-			<key>NSPrivacyCollectedDataTypePurposes</key>
-			<array>
-				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
-			</array>
-		</dict>
-		<!-- Timings: how long a link lasted, how long a move took to confirm. -->
-		<dict>
-			<key>NSPrivacyCollectedDataType</key>
-			<string>NSPrivacyCollectedDataTypePerformanceData</string>
-			<key>NSPrivacyCollectedDataTypeLinked</key>
-			<false/>
-			<key>NSPrivacyCollectedDataTypeTracking</key>
-			<false/>
-			<key>NSPrivacyCollectedDataTypePurposes</key>
-			<array>
-				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
-			</array>
-		</dict>
-		<!-- Connectivity diagnostics: which transport carried traffic, what blocked it. -->
-		<dict>
-			<key>NSPrivacyCollectedDataType</key>
-			<string>NSPrivacyCollectedDataTypeOtherDiagnosticData</string>
-			<key>NSPrivacyCollectedDataTypeLinked</key>
-			<false/>
-			<key>NSPrivacyCollectedDataTypeTracking</key>
-			<false/>
-			<key>NSPrivacyCollectedDataTypePurposes</key>
-			<array>
-				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
 			</array>
 		</dict>
 	</array>

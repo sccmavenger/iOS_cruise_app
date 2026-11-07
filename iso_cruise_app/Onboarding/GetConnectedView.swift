@@ -211,7 +211,7 @@ struct GetConnectedView: View {
 
     private var aloneSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("CruiseLAN only works with other people running it nearby. There's no one to match you with, because there's no server.")
+            Text("Nearby connections only reach people running CruiseLAN close to you. With internet, Quick Play finds an online game instead, and you can always play the computer in Tic-Tac-Toe, Connect Four, Checkers, and Chess.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 

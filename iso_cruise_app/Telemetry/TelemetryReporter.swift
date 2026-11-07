@@ -67,6 +67,10 @@ final class TelemetryReporter {
     /// without an endpoint doesn't look like a build with a broken one.
     var isConfigured: Bool { endpoint != nil }
 
+    /// Whether this build has anywhere to send diagnostics. Without one, the sharing switch
+    /// is hidden: a switch that sends nothing would misdescribe what the app does.
+    static var isAvailable: Bool { configuredEndpoint() != nil }
+
     var lastUpload: Date? {
         UserDefaults.standard.object(forKey: Self.lastUploadKey) as? Date
     }

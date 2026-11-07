@@ -56,21 +56,28 @@ struct OnboardingView: View {
                             .font(.footnote)
                             .foregroundStyle(.red)
                     } else {
-                        Text("Shown to people nearby. Up to \(Nickname.maxCharacters) characters. You can change it later.")
+                        Text("Shown to the people you play with. Up to \(Nickname.maxCharacters) characters. You can change it later.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
                 }
 
                 VStack(alignment: .leading, spacing: 14) {
-                    FeatureRow(symbol: "wifi.slash", title: "Works offline", detail: "Connects to nearby iPhones over Wi-Fi or Bluetooth, and other phones running CruiseLAN pass messages along to reach further.")
-                    FeatureRow(symbol: "lock.fill", title: "Private by design", detail: "End-to-end encrypted, no accounts, no cloud. Only people you accept can message you. Messages vanish when you quit.")
+                    if AppFeatures.chatEnabled {
+                        FeatureRow(symbol: "wifi.slash", title: "Works offline", detail: "Connects to nearby iPhones over Wi-Fi or Bluetooth, and other phones running CruiseLAN pass messages along to reach further.")
+                        FeatureRow(symbol: "lock.fill", title: "Private by design", detail: "End-to-end encrypted, no accounts, no cloud. Only people you accept can message you. Messages vanish when you quit.")
+                    } else {
+                        FeatureRow(symbol: "globe", title: "Online or offline", detail: "With internet, games are hosted online so you can play from anywhere. Without it, phones nearby connect over Wi-Fi or Bluetooth.")
+                        FeatureRow(symbol: "lock.fill", title: "No accounts, no ads", detail: "Just a nickname. Online games keep only the moves and nicknames needed to host them, and delete them automatically.")
+                    }
                     // Built from GameType so this can't go stale when a game is added, which
                     // it already had once: Spades and Tonk shipped while this still listed five.
                     FeatureRow(symbol: "gamecontroller.fill", title: "Play together", detail: Self.gameList)
                 }
 
-                Text("Next, iOS will ask about your local network, Bluetooth, and notifications. CruiseLAN uses them to find nearby people and to let you know about new messages and your turn, even while you're in another app.")
+                Text(AppFeatures.chatEnabled
+                     ? "Next, iOS will ask about your local network, Bluetooth, and notifications. CruiseLAN uses them to find nearby people and to let you know about new messages and your turn, even while you're in another app."
+                     : "Next, iOS will ask about your local network, Bluetooth, and notifications. CruiseLAN uses them to find players nearby and to let you know when it's your turn, even while you're in another app.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
